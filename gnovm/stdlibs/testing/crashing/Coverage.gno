@@ -14,6 +14,14 @@ type Set struct {
 	data map[uint64]struct{}
 }
 
+// operation function!!
+func get_hash_path(input Coverage) uint64 {
+	valBytes := UintSliceToBytes(input)
+	ValArray := sha256.Sum256(valBytes)
+	return BytesToUint64(ValArray)
+}
+
+// ------------internal functions--------------
 // Set 생성자
 func NewSet() *Set {
 	return &Set{
