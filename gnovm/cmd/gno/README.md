@@ -21,7 +21,7 @@ SUBCOMMANDS
   fmt    gnofmt (reformat) package sources
   mod    module maintenance
   run    run gno packages
-  test   test packages
+  test   runs the tests for the specified packages
   tool   run specified gno tool
 
 ```
