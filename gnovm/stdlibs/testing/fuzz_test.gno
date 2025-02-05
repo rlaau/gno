@@ -1,168 +1,66 @@
-package testing
+package testing_test
 
-import "strings"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
-func TestMutate(t *T) {
-	originalValue := "Hello"
-	fuzzer := StringFuzzer{Value: originalValue}
+// afl 퍼져의 주요 벤치마크는 크게 2개임
+// symbolic guided: symbolic한 가이드를 받으며 깊은 depth나 분기를 뚫을 수 있는가
+// find edge input: 기계적으로 edge input을 생성할 수 있는가.
 
-	newFuzzer := fuzzer.Mutate().(*StringFuzzer)
-
-	if newFuzzer.Value == originalValue {
-		t.Errorf("Mutate did not change the string: got %v, want different from %v", newFuzzer.Value, originalValue)
-	}
-
-	if len(newFuzzer.Value) != len(originalValue) {
-		t.Errorf("Mutated string has different length: got %s (len=%v), want %s (len=%v)", newFuzzer.Value, len(newFuzzer.Value), originalValue, len(originalValue))
-	}
-}
-
-func TestSelection(t *T) {
-	tests := []struct {
-		name       string
-		population []*Individual
-	}{
-		{
-			name:       "Empty population",
-			population: []*Individual{},
-		},
-		{
-			name: "Uniform fitness",
-			population: []*Individual{
-				{Fitness: 10},
-				{Fitness: 10},
-				{Fitness: 10},
-			},
-		},
-		{
-			name: "Different fitness",
-			population: []*Individual{
-				{Fitness: 5},
-				{Fitness: 15},
-				{Fitness: 10},
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *T) {
-			selected := Selection(tc.population)
-			if len(selected) != len(tc.population) {
-				t.Errorf("Expected selected length to be %d, got %d", len(tc.population), len(selected))
-			}
-		})
-	}
-}
-
-func TestCrossover(t *T) {
-	parent1 := NewIndividual(&StringFuzzer{Value: "foobar"})
-	parent2 := NewIndividual(&StringFuzzer{Value: "bazbiz"})
-
-	var child1, child2 *Individual
-	for i := 0; i < 100; i++ {
-		child1, child2 = Crossover(parent1, parent2)
-	}
-
-	if child1.Fuzzer.String() == "foobar" || child2.Fuzzer.String() == "bazbiz" {
-		t.Errorf("Crossover did not modify children correctly, got %s and %s", child1.Fuzzer.String(), child2.Fuzzer.String())
-	}
-}
-
-func Test_StringManipulation(t *T) {
-	f := &F{
-		corpus: []string{"hello", "world", "foo", "bar"},
-	}
-
-	f.evolve(30)
-
-	if len(f.corpus) != 4 {
-		t.Fatalf("corpus length is %d, want 4", len(f.corpus))
-	}
-
-	for i, c := range f.corpus {
-		if c == "" {
-			t.Fatalf("corpus[%d] is empty", i)
+// 퍼져의 주요 벤치마크크 중 "symbolic"한 특성 대한 test: 심볼릭한 경로를 제대로 탐색하는가를 측정.
+// 깊은 path depth를 뚫어낼 수 있는지 test하는 함수
+func FuzzSymbolicPath(f *testing.F) {
+	f.Add("k")
+	f.Add("c")
+	f.Fuzz(func(t *testing.T, orig ...interface{}) {
+		s, ok := orig[0].(string)
+		if !ok {
+			panic("dont match")
 		}
-
-		if len(c) < 3 {
-			t.Fatalf("corpus[%d] is too short: %s", i, c)
-		}
-
-		if f.corpus[0] == "hello" {
-			t.Fatalf("corpus[0] is still the same: %s", f.corpus[0])
-		}
-
-		if f.corpus[1] == "world" {
-			t.Fatalf("corpus[1] is still the same: %s", f.corpus[1])
-		}
-
-		if f.corpus[2] == "foo" {
-			t.Fatalf("corpus[2] is still the same: %s", f.corpus[2])
-		}
-
-		if f.corpus[3] == "bar" {
-			t.Fatalf("corpus[3] is still the same: %s", f.corpus[3])
-		}
-
-	}
-}
-
-func TestFuzz(t *T) {
-	f := F{}
-	f.Add("hello", "world", "foo")
-	f.Fuzz(func(t *T, inputs ...interface{}) {
-		for _, input := range inputs {
-			strInput, ok := input.(string)
-			if !ok {
-				t.Errorf("Type mismatch, expected a string but got %T", input)
-				continue
-			}
-
-			words := strings.Fields(strInput)
-			if len(words) == 0 {
-				t.Errorf("Expected non-empty input")
+		if len(s) > 0 && s[0] == 'b' {
+			if len(s) > 1 && s[1] == 'a' {
+				if len(s) > 2 && s[2] == 'd' {
+					if len(s) > 3 && s[3] == '!' {
+						panic("crash triggered")
+					}
+				}
 			}
 		}
-	}, 15)
+	})
+}
 
-	if len(f.corpus) == 0 {
-		t.Fatalf("Fuzzing corpus is empty after testing")
-	}
-
-	if len(f.corpus) > 3 {
-		t.Fatalf("Fuzzing corpus has more than 3 elements: %v", f.corpus)
-	}
-
-	for _, c := range f.corpus {
-		if c == "hello" || c == "world" || c == "foo" {
-			t.Fatalf("Fuzzing corpus still contains the original elements: %v", f.corpus)
+// 퍼져의 주요 기준 중 "edge"한 특성 대한 tets: edge case를 제대로 생성하는가를 측정.
+// find edge input: 기계적으로 edge input을 생성할 수 있는가에 대한 함수.
+// 그걸 위한 적절한 최소 genetic gen값과, 뮤테이션, 엣지케이스 정도가 만족해야 함.
+// 물론, 유전 알고리즘의 최소 생성 개수를 240에서 2로, 최대 생성을 1920에서 190으로 낮추면, 위의 symbolicPath는 엄청 빨리 찾아짐
+// 근데 그렇게 되면, 아래의 edgeCase를 찾지 못함.
+// 유전알고리즘의 최소 생성 개수를 좁히면 조건분기에는 능숙한데, 반복문에서의 path폭증 시 그걸 대응하지 못함
+// 또한 유전알고리즘의 최대 생성 개수를 줄이면 빠르게 변이를 늘릴 수 있지만, 고착화 문제가 생김
+// 즉, 최대와 최소 생성개수에는 최솟값 제약이 걸림. 이것은 failing인풋을 찾는데 걸리는 시간이 길어지게 함.
+// 그러나 그럼으로써 안정적인 시간 내에 웬만한 경우에 failing input을 찾도록 함.
+// 범용적인 퍼져를 만들수록 퍼징 시간은 길어짐. 일종의 trade off임. (특히나 go의 경우 string값의 아주 넓기에...)
+func FuzzEdgeCase(f *testing.F) {
+	f.Add("apple hello", int(42131231230))
+	f.Add("rainy day", int(98401132231331))
+	f.Add("winter comes", int(12349123123))
+	f.Fuzz(func(t *testing.T, orig ...interface{}) {
+		v, ok := orig[0].(string)
+		if !ok {
+			panic("dont match")
 		}
-	}
-}
-
-func TestF_Fail(t *T) {
-	f := F{}
-	f.Fail()
-
-	if !f.failed {
-		t.Errorf("Fail did not set the failed flag.")
-	}
-}
-
-func TestF_Fatal(t *T) {
-	f := F{}
-	testMessage := "test failure message"
-	f.Fatal(testMessage)
-
-	if !f.failed {
-		t.Errorf("Fatal did not set the failed flag.")
-	}
-
-	if len(f.msgs) != 1 {
-		t.Fatalf("Fatal did not set the message correctly: got %v, want %v", f.msgs, testMessage)
-	}
-
-	if !strings.Contains(f.msgs[0], testMessage) {
-		t.Errorf("Fatal did not set the message correctly: got %v, want %v", f.msgs[0], testMessage)
-	}
+		i, ok2 := orig[1].(int)
+		if !ok2 {
+			panic("dont match")
+		}
+		rev := testing.Reverse(v)
+		doubleRev := testing.Reverse(rev)
+		if v != doubleRev && i > 300 && i < 500 {
+			t.Errorf("Before: %q, after: %q", orig, doubleRev)
+		}
+		if utf8.ValidString(v) && !utf8.ValidString(rev) && i > 300 && i < 1000 {
+			t.Errorf("Reverse produced invalid UTF-8 string %q", rev)
+		}
+	})
 }
