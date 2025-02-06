@@ -1,6 +1,9 @@
 // Copyright 2015 go-fuzz project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
+// Some functions were modified to fit gno. (There was a feature that was supported on go but not on gno.
+// Replaced the file input/output related function with sb.builder.)
+
 // Package versifier recognizes internal structure of random (currently text-only) data
 // and allows to generate data of a similar structure (for some very weak definition of "similar").
 package versifier
