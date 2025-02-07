@@ -1,4 +1,4 @@
-package main
+package parser
 
 import (
 	"fmt"
@@ -94,9 +94,13 @@ func (r *rootEnt) getDepth() int  { return r.depth }
 // ─────────────────────────────
 // 3) 전역 설정 (mark 목록, bracket)
 var parserMark = []string{
-	"\r\n", "\n", "\t", "//", "&&", "||",
-	"&", "|", ".", "?", "@", "!", "#", "$", "%", "^",
-	"or", "OR", "and", "AND", "/", "://", ":=", "=", ":",
+	"\r\n", "\n", "\t",
+	"/", "://", "//",
+	".", "?", "@", "!", "#", "$", "%", "^",
+	"&&", "&", "||", "|",
+	"or", "OR", "and", "AND",
+	",", ";",
+	":=", "=", ":",
 }
 
 var bracketPairs = map[rune]rune{
@@ -290,111 +294,109 @@ func parseKeyVals(tokens []Ent) []Ent {
 	var result []Ent
 	i := 0
 	for i < len(tokens) {
-		cur := tokens[i]
-
-		// 1) markEnt인지 검사
-		m, ok := cur.(*markEnt)
-		if !ok {
-			// markEnt가 아니면 그냥 결과에 넣고 계속
-			result = append(result, cur)
-			i++
-			continue
-		}
-		// 2) 구분자(":","=",":=")인지?
-		if m.data != ":" && m.data != "=" && m.data != ":=" {
-			// 아니면 그대로 넣고 계속
-			result = append(result, cur)
-			i++
-			continue
-		}
-
-		// 여기서부터는 m.data가 구분자인 경우
-		// 3) 왼쪽 / 오른쪽에서 alphaEnt/numEnt 찾기
-		leftIndex := i - 1
-		rightIndex := i + 1
-		if leftIndex < 0 || rightIndex >= len(tokens) {
-			// 범위를 벗어나면 keyVal 불가능
-			result = append(result, cur)
-			i++
-			continue
-		}
-
-		// ------------------------------------------------
-		// 왼쪽 공백(있으면) 먼저 확인
-		var leftPadding Ent
-		if _, isWs := tokens[leftIndex].(*wsEnt); isWs {
-			// 이 wsEnt를 leftPadding으로 저장
-			leftPadding = tokens[leftIndex]
-			leftIndex--
-		} else {
-			leftPadding = nil
-		}
-		if leftIndex < 0 {
-			result = append(result, cur)
-			i++
-			continue
-		}
-		left := tokens[leftIndex]
+		// 1) 왼쪽(키) 검사: alphaEnt/numEnt ?
+		left := tokens[i]
 		if !isAlphaOrNum(left) {
-			// 왼쪽이 alphaEnt/numEnt가 아니라면 keyVal 불가
-			result = append(result, cur)
+			// (키 후보 아님) => 그대로 결과에 넣고 다음
+			result = append(result, left)
 			i++
 			continue
 		}
+		// 지금 left는 alphaEnt or numEnt
 
-		// 오른쪽에 wsEnt가 있으면 한 칸 건너뛴다
-		// 오른쪽 공백(있으면) 확인
-		var rightPadding Ent
-		if rightIndex < len(tokens) {
-			if _, isWs := tokens[rightIndex].(*wsEnt); isWs {
-				rightPadding = tokens[rightIndex]
-				rightIndex++
+		pos := i + 1
+		// 2) 왼쪽 공백(옵션)
+		var leftPadding Ent
+		if pos < len(tokens) {
+			if w, ok := tokens[pos].(*wsEnt); ok {
+				leftPadding = w
+				pos++
 			}
-		} else {
-			rightPadding = nil
 		}
-		if rightIndex >= len(tokens) {
-			// 범위 벗어나면 keyVal 불가
-			result = append(result, cur)
-			i++
-			continue
-		}
-		right := tokens[rightIndex]
-		if !isAlphaOrNum(right) {
-			result = append(result, cur)
-			i++
+
+		// delimiter(구분자) 확인
+		if pos >= len(tokens) {
+			// 구분자 위치가 없음 => 실패.
+			result = append(result, left)
+			if leftPadding != nil {
+				result = append(result, leftPadding)
+				// left+padding 소비
+				i += 2
+			} else {
+				i += 1
+			}
 			continue
 		}
 
-		// 4) 여기까지 오면 keyVal 패턴 성립!
-		//    left, cur(구분자), right → 묶어서 keyValEnt
-		parentDepth := left.getDepth()
-		// 내부 토큰들 depth = keyValEnt.depth + 1
-		left.setDepth(parentDepth + 1)
-		cur.setDepth(parentDepth + 1)
-		right.setDepth(parentDepth + 1)
-		if leftPadding != nil {
-			leftPadding.setDepth(parentDepth + 1)
+		delimiter := tokens[pos]
+		md, ok2 := delimiter.(*markEnt)
+		if !ok2 || (md.data != ":" && md.data != "=" && md.data != ":=") {
+			// 구분자가 아닌 경우 => 실패
+			result = append(result, left)
+			if leftPadding != nil {
+				result = append(result, leftPadding)
+				i += 2
+			} else {
+				i += 1
+			}
+			continue
 		}
-		if rightPadding != nil {
-			rightPadding.setDepth(parentDepth + 1)
+		pos++ // delimiter 소비
+
+		// 4) 오른쪽 공백(옵션)
+		var rightPadding Ent
+		if pos < len(tokens) {
+			if w2, ok3 := tokens[pos].(*wsEnt); ok3 {
+				rightPadding = w2
+				pos++
+			}
 		}
+
+		if pos >= len(tokens) {
+			// 값이 있을 자리가 없음 => 실패
+			// => left + leftPadding + delimiter + rightPadding
+			result = append(result, left)
+			if leftPadding != nil {
+				result = append(result, leftPadding)
+			}
+			result = append(result, delimiter)
+			if rightPadding != nil {
+				result = append(result, rightPadding)
+			}
+			// 지금까지 pos개 소비
+			i = pos
+			continue
+		}
+
+		// 5) 오른쪽(값) 검사
+		right := tokens[pos]
+		if !isAlphaOrNum(right) {
+			// 값 후보가 아니면 => 실패
+			result = append(result, left)
+			if leftPadding != nil {
+				result = append(result, leftPadding)
+			}
+			result = append(result, delimiter)
+			if rightPadding != nil {
+				result = append(result, rightPadding)
+			}
+			// i=pos => delimiter/패딩까지 소비
+			i = pos
+			continue
+		}
+		// 성공 => keyValEnt 생성
 		kv := &keyValEnt{
-			depth:     parentDepth,
+			depth:     0,
 			k:         left,
 			plOrNil:   leftPadding,
-			delimiter: cur,
+			delimiter: delimiter,
 			prOrNil:   rightPadding,
 			v:         right,
 		}
-		// 5) result에 keyValEnt 추가
 		result = append(result, kv)
 
-		// 6) 이미 처리된 left / 구분자 / right를 건너뛰어야 함
-		//    (leftIndex < i < rightIndex)
-		//    주의: leftIndex가 i-1이고, rightIndex가 i+1 (혹은 i+2)
-		//    → i는 rightIndex+1로 점프
-		i = rightIndex + 1
+		// 키,왼쪽패딩,구분자,오른쪽패딩,값 소비
+		i = pos + 1
 	} // end for
 	return result
 }
@@ -436,10 +438,9 @@ func parseBrackets(tokens []Ent) []Ent {
 
 func parseBracketGroup(tokens []Ent, from int) (*groupEnt, int) {
 	open, _ := tokens[from].(*markEnt)
-	openDepth := open.getDepth()
 	closeRune := bracketPairs[rune(open.data[0])]
 	g := &groupEnt{
-		depth: openDepth,
+		depth: 0,
 		data:  []Ent{open},
 	}
 	// open bracket depth는 그대로
@@ -449,7 +450,7 @@ func parseBracketGroup(tokens []Ent, from int) (*groupEnt, int) {
 		if mk, ok := tok.(*markEnt); ok && len(mk.data) == 1 {
 			if rune(mk.data[0]) == closeRune {
 				// 닫는 bracket depth도 groupEnt.depth
-				mk.setDepth(openDepth)
+
 				g.data = append(g.data, mk)
 				return g, i + 1
 			}
@@ -462,7 +463,6 @@ func parseBracketGroup(tokens []Ent, from int) (*groupEnt, int) {
 			}
 		}
 		// 일반 토큰 => groupEnt.depth+1
-		tok.setDepth(openDepth + 1)
 		g.data = append(g.data, tok)
 		i++
 	}
@@ -476,6 +476,7 @@ func parseToRoot(s string) *rootEnt {
 	// 1) Lex
 	lx := NewLexer(s)
 	toks := lx.Lex()
+
 	// 2) keyVal
 	toks2 := parseKeyVals(toks)
 	// 3) bracket
@@ -483,6 +484,7 @@ func parseToRoot(s string) *rootEnt {
 	// 4) rootEnt
 	r := &rootEnt{data: toks3, depth: 0}
 	r = applyPatternToRoot(r)
+	finalizeDepth(r, 0)
 	return r
 }
 
@@ -528,6 +530,22 @@ func detectPattern(tokens []Ent) (string, bool) {
 			if d == ":" {
 				jsonColon++
 			}
+		case *keyValEnt:
+			total++
+			d := t.delimiter
+			var dStr string
+			if delim, ok := d.(*markEnt); ok {
+				dStr = delim.data
+			} else {
+				continue
+			}
+
+			if dStr == ":=" || dStr == "=" {
+				gnoCount++
+			} else {
+				jsonColon++
+			}
+
 		}
 	}
 	if total == 0 {
@@ -576,6 +594,35 @@ func flattenTokens(tokens []Ent) []Ent {
 		}
 	}
 	return out
+}
+
+func finalizeDepth(e Ent, currentDepth int) {
+	// e의 depth를 currentDepth로 설정
+	e.setDepth(currentDepth)
+	// 자식 요소가 있으면, 자식에게는 currentDepth+1 적용
+	switch kv := e.(type) {
+	case *keyValEnt:
+		finalizeDepth(kv.k, currentDepth+1)
+		if kv.plOrNil != nil {
+			finalizeDepth(kv.plOrNil, currentDepth+1)
+		}
+		finalizeDepth(kv.delimiter, currentDepth+1)
+		if kv.prOrNil != nil {
+			finalizeDepth(kv.prOrNil, currentDepth+1)
+		}
+		finalizeDepth(kv.v, currentDepth+1)
+	case *groupEnt:
+		// groupEnt 내부 토큰들은 currentDepth+1
+		for _, c := range kv.data {
+			finalizeDepth(c, currentDepth+1)
+		}
+	case *rootEnt:
+		// rootEnt 내부도 children은 currentDepth+1
+		for _, c := range kv.data {
+			finalizeDepth(c, currentDepth+1)
+		}
+	}
+	// alphaEnt, numEnt, wsEnt, markEnt 등은 자식 없음
 }
 
 // ─────────────────────────────
@@ -628,25 +675,127 @@ func printTree(e Ent, indent int) {
 	}
 }
 
+// serializeToTokens는 AST 노드를 DFS 식으로 순회하여,
+// 최종적으로 단순 토큰(기본 Ent: alphaEnt, numEnt, wsEnt, markEnt 등) 목록을 반환합니다.
+func serializeToTokens(e Ent) []Ent {
+	switch t := e.(type) {
+
+	// 1) 기본 토큰 (알파벳, 숫자, 공백, 기호 등)
+	case *alphaEnt, *numEnt, *wsEnt, *markEnt:
+		// 직접적으로 한 개의 요소로 변환
+		return []Ent{e}
+
+	// 2) keyValEnt (k, plOrNil, delimiter, prOrNil, v 순서)
+	case *keyValEnt:
+		var out []Ent
+		// k
+		out = append(out, serializeToTokens(t.k)...)
+		// plOrNil (왼쪽 공백)
+		if t.plOrNil != nil {
+			out = append(out, serializeToTokens(t.plOrNil)...)
+		}
+		// delimiter
+		out = append(out, serializeToTokens(t.delimiter)...)
+		// prOrNil (오른쪽 공백)
+		if t.prOrNil != nil {
+			out = append(out, serializeToTokens(t.prOrNil)...)
+		}
+		// v
+		out = append(out, serializeToTokens(t.v)...)
+		return out
+
+	// 3) groupEnt (첫 자식: 여는 괄호, 마지막 자식: 닫는 괄호, 중간: 내부)
+	case *groupEnt:
+		// 보통 data[0]은 여는 bracket, data[len-1]은 닫는 bracket,
+		// 나머지 중간이 본문
+		// 그대로 재귀 펼침
+		var out []Ent
+		if len(t.data) > 0 {
+			// 여는 bracket
+			out = append(out, serializeToTokens(t.data[0])...)
+			// 내부
+			for i := 1; i < len(t.data)-1; i++ {
+				out = append(out, serializeToTokens(t.data[i])...)
+			}
+			// 닫는 bracket
+			if len(t.data) > 1 {
+				out = append(out, serializeToTokens(t.data[len(t.data)-1])...)
+			}
+		}
+		return out
+
+	// 4) rootEnt
+	case *rootEnt:
+		// rootEnt 내부 data를 순회
+		var out []Ent
+		for _, c := range t.data {
+			out = append(out, serializeToTokens(c)...)
+		}
+		return out
+	case nil:
+		return nil
+	default:
+		// 알 수 없는/ 미구현된 노드 타입이면 빈 목록 반환
+		return nil
+	}
+}
+
+// entToString: 토큰 하나를 문자열로 변환 (공백은 그대로, 알파벳/기호도 그대로)
+func entToString(e Ent) string {
+	switch t := e.(type) {
+	case *alphaEnt:
+		return t.data
+	case *numEnt:
+		return t.data
+	case *wsEnt:
+		return t.data
+	case *markEnt:
+		return t.data
+	case nil:
+		return ""
+	default:
+		// 이론상 여기는 오지 않음(serializeToTokens가 풀어줌)
+		return ""
+	}
+}
+
+// serializeToString는 AST 노드를 토큰으로 펼친 뒤,
+// 각 토큰을 문자열로 변환하여 이어 붙여, 최종 문자열을 반환합니다.
+func serializeToString(e Ent) string {
+	tokens := serializeToTokens(e)
+	var sb strings.Builder
+	for _, tok := range tokens {
+		sb.WriteString(entToString(tok))
+	}
+	return sb.String()
+}
+
 // ─────────────────────────────
 // main
 // ─────────────────────────────
 func main() {
-	input := "{a:apple}     hello := world (x=4)"
-	root := parseToRoot(input) // 파싱
+	// input := "{a:apple}     hello := world (x=4)"
+	// root := parseToRoot(input) // 파싱
 	fmt.Println("=== Final AST ===")
-	printTree(root, 0)
 	program := `func main() {
-		parser :=NewParser(input)
+		parser := NewParser(input)
 		t1 := parser.parseTokens(0)
 		root := rootEnt{depth: -0x12, data: t1}
 		root = applyPatternToRoot(root)
 		printTokens([]Ent{root}, 0)
-	   printTokens([]Ent{root}, 0)
-	}`
+		printTokens([]Ent{root}, 0)
+		}`
+	root := parseToRoot(program)
+	printTree(root, 0)
 	myAst := parseToRoot(program)
-	fmt.Println("TEST")
-	printTree(myAst, 0)
+	sealized := serializeToString(myAst)
+	println(sealized)
+
+	if program != sealized {
+		println("logic error")
+	} else {
+		println("ok!")
+	}
 }
 
 // func main() {
