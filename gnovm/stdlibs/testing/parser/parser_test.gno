@@ -38,11 +38,6 @@ func isValidUnicode(s string) bool {
 	return utf8.ValidString(s)
 }
 
-var (
-	counter   int
-	validTest int
-)
-
 func FuzzParser(f *testing.F) {
 	testedStrings := []string{}
 	program := `func main() {
@@ -55,32 +50,14 @@ func FuzzParser(f *testing.F) {
 		}`
 	f.Add(program)
 	f.Fuzz(func(t *testing.T, p ...interface{}) {
-		counter++
-		if counter%100 == 0 {
-			println(strconv.Itoa(counter) + "th trial")
-		}
 		s, ok := p[0].(string)
 		if !ok {
 			panic("dont match")
 		}
-		if !isValidUnicode(s) {
-			return
-		}
-		sourceCode := program
+		sourceCode := s
 		ast := parseToRoot(sourceCode)
 		sealized := serializeToString(ast)
-		validTest++
-		if validTest%40 == 0 {
-			testedStrings = append(testedStrings, sourceCode)
-			testedStrings = append(testedStrings, sealized)
-			println(strconv.Itoa(validTest) + "th validTest!")
-			if validTest%200 == 0 {
-				// 🔹 중복 제거
-				uniqueTestedStrings := removeDuplicates(testedStrings)
-				fmt.Println(uniqueTestedStrings) // 중복 제거된 리스트 출력
-			}
-		}
-		if program != sealized {
+		if sourceCode != sealized {
 			panic("dont equal")
 		}
 	})

@@ -796,6 +796,9 @@ func main() {
 	} else {
 		println("ok!")
 	}
+	pp := "https://www.naver.com/search.naver?query=\xeb"
+	rootp := parseToRoot(pp)
+	printTree(rootp, 0)
 }
 
 // func main() {
