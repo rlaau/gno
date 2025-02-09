@@ -1,8 +1,8 @@
 // Copyright 2015 go-fuzz project authors. All rights reserved.
-// Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
-
-// Some functions were modified to fit gno. (There was a feature that was supported on go but not on gno.
-// Replaced the file input/output related function with sb.builder.)
+// Modified by rlaau in 2025.
+// This file is based on go-fuzz (Apache 2.0 License).
+// https://github.com/dvyukov/go-fuzz/blob/master/go-fuzz/versifier/versifier.go is original code.
+// Some functions were modified to fit "GNO" language.
 
 // Package versifier recognizes internal structure of random (currently text-only) data
 // and allows to generate data of a similar structure (for some very weak definition of "similar").
@@ -38,10 +38,8 @@ import (
 
 func BuildVerse(oldv *Verse, data []byte) *Verse {
 	// Check if the data is something texty. If not, don't bother parsing it.
-	// 말 그대로 "프린터블"한 아스키를 수집
-	// \n,\t등은 제외하고, !@abc같은 프린터블 아스키의 비율을 판단
 	// Versifier don't know how to recognize structure in binary data.
-	// TODO: we could detect detect text and binary parts and handle them separately
+	// TODO: we could detect text and binary parts and handle them separately
 	// (think of an HTTP request with compressed body).
 
 	printable := 0
@@ -618,9 +616,6 @@ func structure(nn []Node) []Node {
 	nn = structureBrackets(nn)
 	nn = structureKeyValue(nn)
 	nn = structureLists(nn)
-
-	// 위의 4단계는 노드를 시멘틱하게 합치는 가정
-	// 아래의 structureLines는 그 노드 정보 바탕 depth시각호 과정
 	nn = structureLines(nn)
 	return nn
 }

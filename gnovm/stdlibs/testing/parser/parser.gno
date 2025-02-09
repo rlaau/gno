@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ─────────────────────────────
@@ -102,6 +103,30 @@ var parserMark = []string{
 	",", ";",
 	":=", "=", ":",
 }
+
+// var bracketPairs = map[rune]rune{
+// 	'(': ')',
+// 	'{': '}',
+// 	'[': ']',
+// for quoted pairs =
+
+// 근데 인용부호는 그 크기가 정합적이지 못함
+// "keyval"은 반드시 그룹에 소갛ㅁ
+// 근데, 인용은 그룹을 포함할수도 될수도, 키에도 그럼.
+// 너무 애매. 걍 파싱 후 후처리 ㄱㄱ
+
+// 왜냐하면, 이런 "인용"들은 "그룹"안에 속하는 "element"이기 때문
+// 아님 차라리 걍 포기해도 좋음. 차피 "파싱"에서 다 갈려나가고 나면 이후 점검해도 됨.
+// isQouted, isAscii, isNumber, isTag, isKeyword등으로
+
+// 즉, 파싱에서 인용으로 묶던가
+// 아님 파싱 이후, 파싱된 대상을 처리하든가
+
+// 	'<': '>',
+// 	'\': '\',
+// 	'"': '"',
+// 	''': ''',
+// }
 
 var bracketPairs = map[rune]rune{
 	'(': ')',
@@ -220,18 +245,47 @@ func (lx *Lexer) nextToken() Ent {
 }
 
 // 숫자 처리: -12, 1e12, 0x16 ...
+// 숫자 처리: -12, 1e12, 0x16, 1e 등도 올바르게 처리
 func (lx *Lexer) lexNumber() Ent {
 	sign := ""
 	if !lx.eof() && lx.peek() == '-' {
 		sign = "-"
 		lx.next()
 	}
-	// 0x?
+
+	// 퍼져에 의해 "0X"에러 발견 후 수정됨
+	// // 16진수 (0x, 0X)
+	// if !lx.eof() && lx.peek() == '0' {
+	// 	if lx.pos+1 < len(lx.input) &&
+	// 		(lx.input[lx.pos+1] == 'x' || lx.input[lx.pos+1] == 'X') {
+	// 		lx.next() // '0'
+	// 		lx.next() // 'x'
+	// 		hexDigits := ""
+	// 		for !lx.eof() {
+	// 			ch := lx.peek()
+	// 			if (ch >= '0' && ch <= '9') ||
+	// 				(ch >= 'a' && ch <= 'f') ||
+	// 				(ch >= 'A' && ch <= 'F') {
+	// 				hexDigits += string(ch)
+	// 				lx.next()
+	// 			} else {
+	// 				break
+	// 			}
+	// 		}
+	// 		if hexDigits == "" {
+	// 			return &numEnt{data: sign + "0x", hex: false}
+	// 		}
+	// 		return &numEnt{data: sign + "0x" + hexDigits, hex: true}
+	// 	}
+	// }
+	// 16진수 (0x, 0X)
 	if !lx.eof() && lx.peek() == '0' {
+		// 만약 다음 문자가 x/X라면
 		if lx.pos+1 < len(lx.input) &&
 			(lx.input[lx.pos+1] == 'x' || lx.input[lx.pos+1] == 'X') {
-			lx.next() // '0'
-			lx.next() // 'x'
+
+			lx.next()          // '0'
+			xChar := lx.next() // 'x' or 'X' (rune)
 			hexDigits := ""
 			for !lx.eof() {
 				ch := lx.peek()
@@ -244,52 +298,62 @@ func (lx *Lexer) lexNumber() Ent {
 					break
 				}
 			}
+
+			// 만약 x 뒤에 헥사 숫자가 하나도 없으면
 			if hexDigits == "" {
-				return &numEnt{data: sign + "0x", hex: false}
+				// ex) "0x" or "0X"만 입력되었을 경우
+				// → hex=false로 반환
+				return &numEnt{
+					data: sign + "0" + string(xChar),
+					hex:  false,
+				}
 			}
-			return &numEnt{data: sign + "0x" + hexDigits, hex: true}
+
+			// 정상적인 16진수
+			return &numEnt{
+				data: sign + "0" + string(xChar) + hexDigits, // 대소문자 보존
+				hex:  true,
+			}
 		}
 	}
+
 	// 10진수
 	digits := ""
 	for !lx.eof() && unicode.IsDigit(lx.peek()) {
 		digits += string(lx.next())
 	}
+
 	if digits == "" {
-		// -만 있었음
+		// '-' 단독이면 숫자가 아님
 		return &markEnt{data: sign}
 	}
-	// e/E?
+
+	// e/E (지수 표현)
 	expo := ""
 	if !lx.eof() && (lx.peek() == 'e' || lx.peek() == 'E') {
 		echar := lx.next() // consume e/E
 		expSign := ""
+
 		if !lx.eof() && (lx.peek() == '+' || lx.peek() == '-') {
 			expSign = string(lx.next())
 		}
+
 		expDigits := ""
 		for !lx.eof() && unicode.IsDigit(lx.peek()) {
 			expDigits += string(lx.next())
 		}
+
 		if expDigits == "" {
-			return &numEnt{data: sign + digits, hex: false}
+			// `1e` 같은 경우를 처리 → `1e` 자체를 숫자로 인식
+			return &numEnt{data: sign + digits + string(echar) + expSign, hex: false}
 		}
+
 		expo = string(echar) + expSign + expDigits
 	}
+
 	return &numEnt{data: sign + digits + expo, hex: false}
 }
 
-// ─────────────────────────────
-//  5. keyVal 파싱
-//     keyValEnt.depth = (부모 depth)
-//     내부 토큰 depth = keyValEnt.depth+1
-//
-// ─────────────────────────────
-// parseKeyVals:
-//
-//	... alphaEnt/numEnt, (공백), markEnt(:|=|:=), (공백), alphaEnt/numEnt ...
-//
-// 을 하나의 keyValEnt로 묶는다. (중간에 wsEnt 한 번씩만 건너뛰어 검사)
 func parseKeyVals(tokens []Ent) []Ent {
 	var result []Ent
 	i := 0
@@ -476,7 +540,9 @@ func parseToRoot(s string) *rootEnt {
 	// 1) Lex
 	lx := NewLexer(s)
 	toks := lx.Lex()
-
+	// k := &rootEnt{data: toks, depth: 0}
+	// println("lexer")
+	// printTree(k, 0)
 	// 2) keyVal
 	toks2 := parseKeyVals(toks)
 	// 3) bracket
@@ -770,6 +836,13 @@ func serializeToString(e Ent) string {
 	return sb.String()
 }
 
+func safeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s // 이미 안전한 UTF-8이면 그대로 반환
+	}
+	return string([]rune(s)) // 유효한 UTF-8 문자만 남김
+}
+
 // ─────────────────────────────
 // main
 // ─────────────────────────────
@@ -777,69 +850,114 @@ func main() {
 	// input := "{a:apple}     hello := world (x=4)"
 	// root := parseToRoot(input) // 파싱
 	fmt.Println("=== Final AST ===")
+	// program := `func main() {
+	// 	parser := NewParser(input)
+	// 	t1 := parser.parseTokens(0)
+	// 	root := rootEnt{depth: -0x12, data: t1}
+	// 	root = applyPatternToRoot(root)
+	// 	printTokens([]Ent{root}, 0)
+	// 	printTokens([]Ent{root}, 0)
+	// 	}`
 	program := `func main() {
 		parser := NewParser(input)
 		t1 := parser.parseTokens(0)
-		root := rootEnt{depth: -0x12, data: t1}
+		root := rootEnt{"depth": '-0x12', data: 0X}
 		root = applyPatternToRoot(root)
 		printTokens([]Ent{root}, 0)
 		printTokens([]Ent{root}, 0)
 		}`
-	root := parseToRoot(program)
+
+	root := parseToRoot(safeUTF8(program))
 	printTree(root, 0)
 	myAst := parseToRoot(program)
 	sealized := serializeToString(myAst)
 	println(sealized)
 
 	if program != sealized {
+		println("orig:", program)
+		println("parsed", sealized)
 		println("logic error")
 	} else {
 		println("ok!")
 	}
-	pp := "https://www.naver.com/search.naver?query=\xeb"
+	pp := "https://www.naver.com/search.naver?query=12"
 	rootp := parseToRoot(pp)
 	printTree(rootp, 0)
+	ml := `<html><a>yeah!<a/><html/>`
+	rootm := parseToRoot(ml)
+	printTree(rootm, 0)
 }
 
-// func main() {
-// 	// 예제 1: JSON 형식 문자열 (괄호 내 return 블록은 groupEnt로 처리)
-// 	input := "{a:appple,b:apple}"
-// 	parser := NewParser(input)
-// 	tokens := parser.parseTokens(0)
-// 	// 최상위 노드는 rootEnt로 생성 (groupEnt은 내부에서만 사용)
-// 	root := rootEnt{depth: 0, data: tokens}
-// 	root = applyPatternToRoot(root)
-// 	fmt.Println("Parsed tokens (예제 1):")
-// 	printTokens([]Ent{root}, 0)
-
-// 	// 예제 2: URL 문자열
-// 	input = "https://www.naver.com?search=0x16+1e14"
-// 	parser = NewParser(input)
-// 	tokens = parser.parseTokens(0)
-// 	root = rootEnt{depth: 0, data: tokens}
-// 	root = applyPatternToRoot(root)
-// 	fmt.Println("\nParsed tokens (예제 2):")
-// 	printTokens([]Ent{root}, 0)
-
-// 	// 예제 3: 일반 문자열 (패턴은 rootEnt에서만 전담)
-// 	input = `func main() {
-// 		parser := NewParser(input)
-// 		tokens := parser.parseTokens(0)
-// 		root := rootEnt{depth: 0, data: tokens}
-// 		root = applyPatternToRoot(root)
-// 		printTokens([]Ent{root}, 0)
-// 		printTokens([]Ent{root}, 0)
-// 	}`
-// 	parser = NewParser(input)
-// 	tokens = parser.parseTokens(0)
-// 	root = rootEnt{depth: 0, data: tokens}
-// 	root = applyPatternToRoot(root)
-// 	fmt.Println("\nParsed string (예제 3):")
-// 	fmt.Println("Detected pattern:", root.pattern)
-// 	printTokens([]Ent{root}, 0)
-// 	input = "{a:apple} hello := world (x=4)"
-// 	root = rootEnt{depth: 0, data: parseString(input)}
-// 	final := applyPatternToRoot(root)
-// 	fmt.Println("Detected pattern:", final.pattern)
-// 	printTokens([]Ent{final}, 0)
-// }
+// 퍼져가 찾은 에러 코드임. "1E"에 대해선 에러 나옴을 찾음
+// // 숫자 처리: -12, 1e12, 0x16 ...
+//
+//	func (lx *Lexer) lexNumber() Ent {
+//		sign := ""
+//		if !lx.eof() && lx.peek() == '-' {
+//			sign = "-"
+//			lx.next()
+//		}
+//		// 0x?
+//		if !lx.eof() && lx.peek() == '0' {
+//			if lx.pos+1 < len(lx.input) &&
+//				(lx.input[lx.pos+1] == 'x' || lx.input[lx.pos+1] == 'X') {
+//				lx.next() // '0'
+//				lx.next() // 'x'
+//				hexDigits := ""
+//				for !lx.eof() {
+//					ch := lx.peek()
+//					if (ch >= '0' && ch <= '9') ||
+//						(ch >= 'a' && ch <= 'f') ||
+//						(ch >= 'A' && ch <= 'F') {
+//						hexDigits += string(ch)
+//						lx.next()
+//					} else {
+//						break
+//					}
+//				}
+//				if hexDigits == "" {
+//					return &numEnt{data: sign + "0x", hex: false}
+//				}
+//				return &numEnt{data: sign + "0x" + hexDigits, hex: true}
+//			}
+//		}
+//		// 10진수
+//		digits := ""
+//		for !lx.eof() && unicode.IsDigit(lx.peek()) {
+//			digits += string(lx.next())
+//		}
+//		if digits == "" {
+//			// -만 있었음
+//			return &markEnt{data: sign}
+//		}
+//		// e/E?
+//		expo := ""
+//		if !lx.eof() && (lx.peek() == 'e' || lx.peek() == 'E') {
+//			echar := lx.next() // consume e/E
+//			expSign := ""
+//			if !lx.eof() && (lx.peek() == '+' || lx.peek() == '-') {
+//				expSign = string(lx.next())
+//			}
+//			expDigits := ""
+//			for !lx.eof() && unicode.IsDigit(lx.peek()) {
+//				expDigits += string(lx.next())
+//			}
+//			if expDigits == "" {
+//				return &numEnt{data: sign + digits, hex: false}
+//			}
+//			expo = string(echar) + expSign + expDigits
+//		}
+//		return &numEnt{data: sign + digits + expo, hex: false}
+//	}
+//
+// ─────────────────────────────
+//  5. keyVal 파싱
+//     keyValEnt.depth = (부모 depth)
+//     내부 토큰 depth = keyValEnt.depth+1
+//
+// ─────────────────────────────
+// parseKeyVals:
+//
+//	... alphaEnt/numEnt, (공백), markEnt(:|=|:=), (공백), alphaEnt/numEnt ...
+//
+// 을 하나의 keyValEnt로 묶는다. (중간에 wsEnt 한 번씩만 건너뛰어 검사)

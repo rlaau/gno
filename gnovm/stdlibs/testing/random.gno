@@ -78,6 +78,13 @@ func (p *PCG) Int() int {
 	return int(p.Uint64() &^ (1 << 63)) // 최상위 비트를 제거하여 음수가 아닌 값 반환
 }
 
+func (p *PCG) Intn(n int) int {
+	if n <= 0 {
+		panic("n must be greater than 0")
+	}
+	return int(p.Uint64() % uint64(n))
+}
+
 // Int32() - int32 타입의 난수 생성
 func (p *PCG) Int32() int32 {
 	return int32(p.Uint64() >> 32) // 32비트 상위 부분을 잘라서 int32로 변환

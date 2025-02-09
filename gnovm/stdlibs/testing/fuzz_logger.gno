@@ -76,6 +76,10 @@ func escapedToString(s string) string {
 	return escaped
 }
 
+func EscapedToString(s string) string {
+	return escapedToString(s)
+}
+
 // token represents a segment of a string, distinguishing between valid Unicode and broken bytes.
 type token struct {
 	Data  []byte // The actual bytes of the token.

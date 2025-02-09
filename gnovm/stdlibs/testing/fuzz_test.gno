@@ -12,8 +12,7 @@ import (
 // 퍼져의 주요 벤치마크크 중 "symbolic"한 특성 대한 test: 심볼릭한 경로를 제대로 탐색하는가를 측정.
 // 깊은 path depth를 뚫어낼 수 있는지 test하는 함수
 func FuzzSymbolicPath(f *testing.F) {
-	f.Add("k")
-	f.Add("c")
+	f.Add("")
 	f.Fuzz(func(t *testing.T, orig ...interface{}) {
 		s, ok := orig[0].(string)
 		if !ok {
