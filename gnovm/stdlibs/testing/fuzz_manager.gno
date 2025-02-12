@@ -400,16 +400,17 @@ type (
 	}
 
 	// seed represents a single seed with its metadata.
-	seed struct {
-		pid           uint
-		id            uint
-		gen           uint
-		isCoordinated bool
-		hashNumber    hashNumber
-		content       []interface{}
-		result        interface{}
-	}
 )
+
+type seed struct {
+	pid           uint
+	id            uint
+	gen           uint
+	isCoordinated bool
+	hashNumber    hashNumber
+	content       []interface{}
+	result        interface{}
+}
 
 // newSeedQueue initializes and returns a new seedQueue.
 func newSeedQueue() *seedQueue {

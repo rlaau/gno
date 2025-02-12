@@ -1,0 +1,2111 @@
+package gnl
+
+// XXX rename file to machine.go.
+
+import (
+	"fmt"
+	"io"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/gnolang/gno/gnovm"
+	bm "github.com/gnolang/gno/gnovm/pkg/benchops"
+	gno "github.com/gnolang/gno/gnovm/pkg/gnolang"
+
+	"github.com/gnolang/gno/tm2/pkg/errors"
+	"github.com/gnolang/gno/tm2/pkg/overflow"
+)
+
+func ParseFile(s string, gnoSource string) (*gno.FileNode, error) {
+	fileNode, err := gno.ParseFile(s, gnoSource)
+	return fileNode, err
+}
+func ParseExpr(expr string) (gno.Expr, error) {
+	return gno.ParseExpr(expr)
+}
+
+type Machine struct {
+	gno.Machine
+}
+
+//----------------------------------------
+// Machine
+
+// NewMachine initializes a new gno virtual machine, acting as a shorthand
+// for [NewMachineWithOptions], setting the given options PkgPath and Store.
+//
+// The machine will run on the package at the given path, which will be
+// retrieved through the given store. If it is not set, the machine has no
+// active package, and one must be set prior to usage.
+//
+// Like for [NewMachineWithOptions], Machines initialized through this
+// constructor must be finalized with [Machine.Release].
+func NewMachine(pkgPath string, store gno.Store) *gno.Machine {
+	return NewMachineWithOptions(
+		gno.MachineOptions{
+			PkgPath: pkgPath,
+			Store:   store,
+		})
+}
+
+// gnl 패키지 내
+func WrapGnoMachine(g *gno.Machine) *Machine {
+	return &Machine{
+		Machine: *g, // 얕은 복사(Shallow Copy)
+	}
+}
+
+// MachineOptions is used to pass options to [NewMachineWithOptions].
+type MachineOptions struct {
+	gno.MachineOptions
+}
+
+// the machine constructor gets spammed
+// this causes a significant part of the runtime and memory
+// to be occupied by *Machine
+// hence, this pool
+var machinePool = sync.Pool{
+	New: func() interface{} {
+		return &gno.Machine{
+			Ops:    make([]gno.Op, VMSliceSize),
+			Values: make([]gno.TypedValue, VMSliceSize),
+		}
+	},
+}
+
+// NewMachineWithOptions initializes a new gno virtual machine with the given
+// options.
+//
+// Machines initialized through this constructor must be finalized with
+// [Machine.Release].
+func NewMachineWithOptions(opts gno.MachineOptions) *gno.Machine {
+	preprocessorMode := opts.PreprocessorMode
+	readOnly := opts.ReadOnly
+	maxCycles := opts.MaxCycles
+	vmGasMeter := opts.GasMeter
+
+	output := opts.Output
+	if output == nil {
+		output = io.Discard
+	}
+	alloc := opts.Alloc
+	if alloc == nil {
+		alloc = gno.NewAllocator(opts.MaxAllocBytes)
+	}
+	store := opts.Store
+	if store == nil {
+		// bare store, no stdlibs.
+		store = gno.NewStore(alloc, nil, nil)
+	}
+	pv := (*gno.PackageValue)(nil)
+	if opts.PkgPath != "" {
+		pv = store.GetPackage(opts.PkgPath, false)
+		if pv == nil {
+			pkgName := gno.DefaultPkgName(opts.PkgPath)
+			pn := gno.NewPackageNode(pkgName, opts.PkgPath, &gno.FileSet{})
+			pv = pn.NewPackage()
+			store.SetBlockNode(pn)
+			store.SetCachePackage(pv)
+		}
+	}
+	context := opts.Context
+	mm := machinePool.Get().(*gno.Machine)
+	mm.Package = pv
+	mm.Alloc = alloc
+	mm.PreprocessorMode = preprocessorMode
+	mm.ReadOnly = readOnly
+	mm.MaxCycles = maxCycles
+	mm.Output = output
+	mm.Store = store
+	mm.Context = context
+	mm.GasMeter = vmGasMeter
+
+	opts.Debug, opts.Input, output = mm.Debugger.GetStatus()
+
+	if pv != nil {
+		mm.SetActivePackage(pv)
+	}
+	return mm
+}
+
+const (
+	VMSliceSize = 1024
+)
+
+var (
+	opZeroed    [VMSliceSize]gno.Op
+	valueZeroed [VMSliceSize]gno.TypedValue
+)
+
+// Release resets some of the values of *Machine and puts back m into the
+// machine pool; for this reason, Release() should be called as a finalizer,
+// and m should not be used after this call. Only Machines initialized with this
+// package's constructors should be released.
+func (m *Machine) Release() {
+	// 초기화
+	m.NumOps = 0
+	m.NumValues = 0
+
+	ops, values := m.Ops[:VMSliceSize:VMSliceSize], m.Values[:VMSliceSize:VMSliceSize]
+	copy(ops, opZeroed[:])
+	copy(values, valueZeroed[:])
+
+	// ✅ `gno.Machine`을 명시적으로 초기화해야 함
+	*m = Machine{
+		Machine: gno.Machine{
+			Ops:    ops,
+			Values: values,
+		},
+	}
+
+	machinePool.Put(m)
+}
+
+func (m *Machine) SetActivePackage(pv *gno.PackageValue) {
+	if err := m.CheckEmpty(); err != nil {
+		panic(errors.Wrap(err, "set package when machine not empty"))
+	}
+	m.Package = pv
+	m.Realm = pv.GetRealm()
+	m.Blocks = []*gno.Block{
+		pv.GetBlock(m.Store),
+	}
+}
+
+//----------------------------------------
+// top level Run* methods.
+
+// Upon restart, preprocess all MemPackage and save blocknodes.
+// This is a temporary measure until we optimize/make-lazy.
+//
+// NOTE: package paths not beginning with gno.land will be allowed to override,
+// to support cases of stdlibs processed through [RunMemPackagesWithOverrides].
+func (m *Machine) PreprocessAllFilesAndSaveBlockNodes() {
+	ch := m.Store.IterMemPackage()
+	for memPkg := range ch {
+		fset := gno.ParseMemPackage(memPkg)
+		pn := gno.NewPackageNode(gno.Name(memPkg.Name), memPkg.Path, fset)
+		m.Store.SetBlockNode(pn)
+		gno.PredefineFileSet(m.Store, pn, fset)
+		for _, fn := range fset.Files {
+			// Save Types to m.Store (while preprocessing).
+			fn = gno.Preprocess(m.Store, pn, fn).(*gno.FileNode)
+			// Save BlockNodes to m.Store.
+			gno.SaveBlockNodes(m.Store, fn)
+		}
+		// Normally, the fileset would be added onto the
+		// package node only after runFiles(), but we cannot
+		// run files upon restart (only preprocess them).
+		// So, add them here instead.
+		// TODO: is this right?
+		if pn.FileSet == nil {
+			pn.FileSet = fset
+		} else {
+			// This happens for non-realm file tests.
+			// TODO ensure the files are the same.
+		}
+	}
+}
+
+//----------------------------------------
+// top level Run* methods.
+
+// Parses files, sets the package if doesn't exist, runs files, saves mempkg
+// and corresponding package node, package value, and types to store. Save
+// is set to false for tests where package values may be native.
+func (m *Machine) RunMemPackage(memPkg *gnovm.MemPackage, save bool) (*gno.PackageNode, *gno.PackageValue) {
+	if bm.OpsEnabled || bm.StorageEnabled {
+		bm.InitMeasure()
+	}
+	if bm.StorageEnabled {
+		defer bm.FinishStore()
+	}
+	return m.runMemPackage(memPkg, save, false)
+}
+
+// RunMemPackageWithOverrides works as [RunMemPackage], however after parsing,
+// declarations are filtered removing duplicate declarations.
+// To control which declaration overrides which, use [ReadMemPackageFromList],
+// putting the overrides at the top of the list.
+func (m *Machine) RunMemPackageWithOverrides(memPkg *gnovm.MemPackage, save bool) (*gno.PackageNode, *gno.PackageValue) {
+	return m.runMemPackage(memPkg, save, true)
+}
+
+func (m *Machine) runMemPackage(memPkg *gnovm.MemPackage, save, overrides bool) (*gno.PackageNode, *gno.PackageValue) {
+	// parse files.
+	files := gno.ParseMemPackage(memPkg)
+	if !overrides {
+		if err := checkDuplicates(files); err != nil {
+			panic(fmt.Errorf("running package %q: %w", memPkg.Path, err))
+		}
+	}
+	// make and set package if doesn't exist.
+	pn := (*gno.PackageNode)(nil)
+	pv := (*gno.PackageValue)(nil)
+	if m.Package != nil && m.Package.PkgPath == memPkg.Path {
+		pv = m.Package
+		loc := gno.PackageNodeLocation(memPkg.Path)
+		pn = m.Store.GetBlockNode(loc).(*gno.PackageNode)
+	} else {
+		pn = gno.NewPackageNode(gno.Name(memPkg.Name), memPkg.Path, &gno.FileSet{})
+		pv = pn.NewPackage()
+		m.Store.SetBlockNode(pn)
+		m.Store.SetCachePackage(pv)
+	}
+	m.SetActivePackage(pv)
+	// run files.
+	updates := m.runFileDecls(files.Files...)
+	// save package value and mempackage.
+	// XXX save condition will be removed once gonative is removed.
+	var throwaway *gno.Realm
+	if save {
+		// store new package values and types
+		throwaway = m.saveNewPackageValuesAndTypes()
+		if throwaway != nil {
+			m.Realm = throwaway
+		}
+	}
+	// run init functions
+	m.runInitFromUpdates(pv, updates)
+	// save again after init.
+	if save {
+		m.resavePackageValues(throwaway)
+		// store mempackage
+		m.Store.AddMemPackage(memPkg)
+		if throwaway != nil {
+			m.Realm = nil
+		}
+	}
+
+	return pn, pv
+}
+
+type redeclarationErrors []gno.Name
+
+func (r redeclarationErrors) Error() string {
+	var b strings.Builder
+	b.WriteString("redeclarations for identifiers: ")
+	for idx, s := range r {
+		b.WriteString(strconv.Quote(string(s)))
+		if idx != len(r)-1 {
+			b.WriteString(", ")
+		}
+	}
+	return b.String()
+}
+
+func (r redeclarationErrors) add(newI gno.Name) redeclarationErrors {
+	if slices.Contains(r, newI) {
+		return r
+	}
+	return append(r, newI)
+}
+
+const (
+	blankIdentifier = "_"
+)
+
+// checkDuplicates returns an error if there are duplicate declarations in the fset.
+func checkDuplicates(fset *gno.FileSet) error {
+	defined := make(map[gno.Name]struct{}, 128)
+	var duplicated redeclarationErrors
+	for _, f := range fset.Files {
+		for _, d := range f.Decls {
+			var name gno.Name
+			switch d := d.(type) {
+			case *gno.FuncDecl:
+				if d.Name == "init" { //nolint:goconst
+					continue
+				}
+				name = d.Name
+				if d.IsMethod {
+					name = gno.Name(destar(d.Recv.Type).String()) + "." + name
+				}
+			case *gno.TypeDecl:
+				name = d.Name
+			case *gno.ValueDecl:
+				for _, nx := range d.NameExprs {
+					if nx.Name == blankIdentifier {
+						continue
+					}
+					if _, ok := defined[nx.Name]; ok {
+						duplicated = duplicated.add(nx.Name)
+					}
+					defined[nx.Name] = struct{}{}
+				}
+				continue
+			default:
+				continue
+			}
+			if name == blankIdentifier {
+				continue
+			}
+			if _, ok := defined[name]; ok {
+				duplicated = duplicated.add(name)
+			}
+			defined[name] = struct{}{}
+		}
+	}
+	if len(duplicated) > 0 {
+		return duplicated
+	}
+	return nil
+}
+
+func destar(x gno.Expr) gno.Expr {
+	if x, ok := x.(*gno.StarExpr); ok {
+		return x.X
+	}
+	return x
+}
+
+const maxStacktraceSize = 128
+
+// Stacktrace returns the stack trace of the machine.
+// It collects the executions and frames from the machine's frames and statements.
+func (m *Machine) Stacktrace() (stacktrace gno.Stacktrace) {
+	if len(m.Frames) == 0 || len(m.Stmts) == 0 {
+		return
+	}
+
+	calls := make([]gno.StacktraceCall, 0, len(m.Stmts))
+	nextStmtIndex := len(m.Stmts) - 1
+	for i := len(m.Frames) - 1; i >= 0; i-- {
+		if m.Frames[i].IsCall() {
+			stm := m.Stmts[nextStmtIndex]
+			bs := stm.(*gno.BodyStmt)
+			stm = bs.Body[bs.NextBodyIndex-1]
+			calls = append(calls, gno.StacktraceCall{
+				Stmt:  stm,
+				Frame: m.Frames[i],
+			})
+		}
+		// if the frame is a call, the next statement is the last statement of the frame.
+		nextStmtIndex = m.Frames[i].NumStmts - 1
+	}
+
+	// if the stacktrace is too long, we trim it down to maxStacktraceSize
+	if len(calls) > maxStacktraceSize {
+		const halfMax = maxStacktraceSize / 2
+
+		stacktrace.NumFramesElided = len(calls) - maxStacktraceSize
+		calls = append(calls[:halfMax], calls[len(calls)-halfMax:]...)
+		calls = calls[:len(calls):len(calls)] // makes remaining part of "calls" GC'able
+	}
+
+	stacktrace.Calls = calls
+
+	return
+}
+
+// Convenience for tests.
+// Production must not use this, because realm package init
+// must happen after persistence and realm finalization,
+// then changes from init persisted again.
+func (m *Machine) RunFiles(fns ...*gno.FileNode) {
+	pv := m.Package
+	if pv == nil {
+		panic("RunFiles requires Machine.Package")
+	}
+	updates := m.runFileDecls(fns...)
+	m.runInitFromUpdates(pv, updates)
+}
+
+var debug = gno.NewDebugging(false)
+
+// Add files to the package's *FileSet and run decls in them.
+// This will also run each init function encountered.
+// Returns the updated typed values of package.
+func (m *Machine) runFileDecls(fns ...*gno.FileNode) []gno.TypedValue {
+	// Files' package names must match the machine's active one.
+	// if there is one.
+	for _, fn := range fns {
+		if fn.PkgName != "" && fn.PkgName != m.Package.PkgName {
+			panic(fmt.Sprintf("expected package name [%s] but got [%s]",
+				m.Package.PkgName, fn.PkgName))
+		}
+	}
+	// Add files to *PackageNode.FileSet.
+	pv := m.Package
+	pb := pv.GetBlock(m.Store)
+	pn := pb.GetSource(m.Store).(*gno.PackageNode)
+	fs := &gno.FileSet{Files: fns}
+	fdeclared := map[gno.Name]struct{}{}
+	if pn.FileSet == nil {
+		pn.FileSet = fs
+	} else {
+		// collect pre-existing declared names
+		for _, fn := range pn.FileSet.Files {
+			for _, decl := range fn.Decls {
+				for _, name := range decl.GetDeclNames() {
+					fdeclared[name] = struct{}{}
+				}
+			}
+		}
+		// add fns to pre-existing fileset.
+		pn.FileSet.AddFiles(fns...)
+	}
+
+	// Predefine declarations across all files.
+	gno.PredefineFileSet(m.Store, pn, fs)
+
+	// Preprocess each new file.
+	for _, fn := range fns {
+		// Preprocess file.
+		// NOTE: Most of the declaration is handled by
+		// Preprocess and any constant values set on
+		// pn.StaticBlock, and those values are copied to the
+		// runtime package value via PrepareNewValues.  Then,
+		// non-constant var declarations and file-level imports
+		// are re-set in runDeclaration(,true).
+		fn = gno.Preprocess(m.Store, pn, fn).(*gno.FileNode)
+		if debug.IsEnabled() {
+			debug.Printf("PREPROCESSED FILE: %v\n", fn)
+		}
+		// After preprocessing, save blocknodes to store.
+		gno.SaveBlockNodes(m.Store, fn)
+		// Make block for fn.
+		// Each file for each *PackageValue gets its own file *Block,
+		// with values copied over from each file's
+		// *FileNode.StaticBlock.
+		fb := m.Alloc.NewBlock(fn, pb)
+		fb.Values = make([]gno.TypedValue, len(fn.StaticBlock.Values))
+		copy(fb.Values, fn.StaticBlock.Values)
+		pv.AddFileBlock(fn.Name, fb)
+	}
+
+	// Get new values across all files in package.
+	updates := pn.PrepareNewValues(pv)
+
+	// to detect loops in var declarations.
+	loopfindr := []gno.Name{}
+	// recursive function for var declarations.
+	var runDeclarationFor func(fn *gno.FileNode, decl gno.Decl)
+	runDeclarationFor = func(fn *gno.FileNode, decl gno.Decl) {
+		// get fileblock of fn.
+		// fb := pv.GetFileBlock(nil, fn.Name)
+		// get dependencies of decl.
+		deps := make(map[gno.Name]struct{})
+		gno.FindDependentNames(decl, deps)
+		for dep := range deps {
+			// if dep already defined as import, skip.
+			if _, ok := fn.GetLocalIndex(dep); ok {
+				continue
+			}
+			// if dep already in fdeclared, skip.
+			if _, ok := fdeclared[dep]; ok {
+				continue
+			}
+			fn, depdecl, exists := pn.FileSet.GetDeclForSafe(dep)
+			// special case: if doesn't exist:
+			if !exists {
+				if gno.IsUverseName(dep) { // then is reserved keyword in uverse.
+					continue
+				} else { // is an undefined dependency.
+					panic(fmt.Sprintf(
+						"dependency %s not defined in fileset with files %v",
+						dep, fs.FileNames()))
+				}
+			}
+			// if dep already in loopfindr, abort.
+			if slices.Contains(loopfindr, dep) {
+				if _, ok := (*depdecl).(*gno.FuncDecl); ok {
+					// recursive function dependencies
+					// are OK with func decls.
+					continue
+				} else {
+					panic(fmt.Sprintf(
+						"loop in variable initialization: dependency trail %v circularly depends on %s", loopfindr, dep))
+				}
+			}
+			// run dependency declaration
+			loopfindr = append(loopfindr, dep)
+			runDeclarationFor(fn, *depdecl)
+			loopfindr = loopfindr[:len(loopfindr)-1]
+		}
+		// run declaration
+		fb := pv.GetFileBlock(m.Store, fn.Name)
+		m.PushBlock(fb)
+		m.runDeclaration(decl)
+		m.PopBlock()
+		for _, n := range decl.GetDeclNames() {
+			fdeclared[n] = struct{}{}
+		}
+	}
+
+	// Declarations (and variable initializations).  This must happen
+	// after all files are preprocessed, because value decl may be out of
+	// order and depend on other files.
+
+	// Run declarations.
+	for _, fn := range fns {
+		for _, decl := range fn.Decls {
+			runDeclarationFor(fn, decl)
+		}
+	}
+
+	return updates
+}
+
+// Run new init functions.
+// Go spec: "To ensure reproducible initialization
+// behavior, build systems are encouraged to present
+// multiple files belonging to the same package in
+// lexical file name order to a compiler."
+func (m *Machine) runInitFromUpdates(pv *gno.PackageValue, updates []gno.TypedValue) {
+	for _, tv := range updates {
+		if tv.IsDefined() && tv.T.Kind() == gno.FuncKind && tv.V != nil {
+			fv, ok := tv.V.(*gno.FuncValue)
+			if !ok {
+				continue // skip native functions.
+			}
+			if strings.HasPrefix(string(fv.Name), "init.") {
+				fb := pv.GetFileBlock(m.Store, fv.FileName)
+				m.PushBlock(fb)
+				m.RunFunc(fv.Name)
+				m.PopBlock()
+			}
+		}
+	}
+}
+
+// Save the machine's package using realm finalization deep crawl.
+// Also saves declared types.
+// This happens before any init calls.
+// Returns a throwaway realm package is not a realm,
+// such as stdlibs or /p/ packages.
+func (m *Machine) saveNewPackageValuesAndTypes() (throwaway *gno.Realm) {
+	// save package value and dependencies.
+	pv := m.Package
+	if pv.IsRealm() {
+		rlm := pv.Realm
+		rlm.MarkNewReal(pv)
+		rlm.FinalizeRealmTransaction(m.ReadOnly, m.Store)
+		// save package realm info.
+		m.Store.SetPackageRealm(rlm)
+	} else { // use a throwaway realm.
+		rlm := gno.NewRealm(pv.PkgPath)
+		rlm.MarkNewReal(pv)
+		rlm.FinalizeRealmTransaction(m.ReadOnly, m.Store)
+		throwaway = rlm
+	}
+	// save declared types.
+	if bv, ok := pv.Block.(*gno.Block); ok {
+		for _, tv := range bv.Values {
+			if tvv, ok := tv.V.(gno.TypeValue); ok {
+				if dt, ok := tvv.Type.(*gno.DeclaredType); ok {
+					m.Store.SetType(dt)
+				}
+			}
+		}
+	}
+	return
+}
+
+// Resave any changes to realm after init calls.
+// Pass in the realm from m.saveNewPackageValuesAndTypes()
+// in case a throwaway was created.
+func (m *Machine) resavePackageValues(rlm *gno.Realm) {
+	// save package value and dependencies.
+	pv := m.Package
+	if pv.IsRealm() {
+		rlm = pv.Realm
+		rlm.FinalizeRealmTransaction(m.ReadOnly, m.Store)
+		// re-save package realm info.
+		m.Store.SetPackageRealm(rlm)
+	} else { // use the throwaway realm.
+		rlm.FinalizeRealmTransaction(m.ReadOnly, m.Store)
+	}
+	// types were already saved, and should not change
+	// even after running the init function.
+}
+
+func (m *Machine) RunFunc(fn gno.Name) {
+	defer func() {
+		if r := recover(); r != nil {
+			switch r := r.(type) {
+			case gno.UnhandledPanicError:
+				fmt.Printf("Machine.RunFunc(%q) panic: %s\nStacktrace: %s\n",
+					fn, r.Error(), m.ExceptionsStacktrace())
+			default:
+				fmt.Printf("Machine.RunFunc(%q) panic: %v\nMachine State:%s\nStacktrace: %s\n",
+					fn, r, m.String(), m.Stacktrace().String())
+			}
+			panic(r)
+		}
+	}()
+	m.RunStatement(gno.S(gno.Call(gno.Nx(fn))))
+}
+
+func (m *Machine) RunMain() {
+	defer func() {
+		r := recover()
+
+		if r != nil {
+			switch r := r.(type) {
+			case gno.UnhandledPanicError:
+				fmt.Printf("Machine.RunMain() panic: %s\nStacktrace: %s\n",
+					r.Error(), m.ExceptionsStacktrace())
+			default:
+				fmt.Printf("Machine.RunMain() panic: %v\nMachine State:%s\nStacktrace: %s\n",
+					r, m.String(), m.Stacktrace())
+			}
+			panic(r)
+		}
+	}()
+	m.RunStatement(gno.S(gno.Call(gno.X("main"))))
+}
+
+// Evaluate throwaway expression in new block scope.
+// If x is a function call, it may return any number of
+// results including 0.  Otherwise it returns 1.
+// Input must not have been preprocessed, that is,
+// it should not be the child of any parent.
+func (m *Machine) Eval(x gno.Expr) []gno.TypedValue {
+	if debug.IsEnabled() {
+		m.Printf("Machine.Eval(%v)\n", x)
+	}
+	if bm.OpsEnabled || bm.StorageEnabled {
+		// reset the benchmark
+		bm.InitMeasure()
+	}
+	if bm.StorageEnabled {
+		defer bm.FinishStore()
+	}
+	// X must not have been preprocessed.
+	if x.GetAttribute(gno.ATTR_PREPROCESSED) != nil {
+		panic(fmt.Sprintf(
+			"Machine.Eval(x) expression already preprocessed: %s",
+			x.String()))
+	}
+	// Preprocess input using last block context.
+	last := m.LastBlock().GetSource(m.Store)
+	// Transform expression to ensure isolation.
+	// This is to ensure that the parent context
+	// doesn't get modified.
+	// XXX Just use a BlockStmt?
+	if _, ok := x.(*gno.CallExpr); !ok {
+		x = gno.Call(gno.Fn(nil, gno.Flds("x", gno.InterfaceT(nil)),
+			gno.Ss(
+				gno.Return(x),
+			)))
+	} else {
+		// x already creates its own scope.
+	}
+	// Preprocess x.
+	x = gno.Preprocess(m.Store, last, x).(gno.Expr)
+	// Evaluate x.
+	start := m.NumValues
+	m.PushOp(gno.OpHalt)
+	m.PushExpr(x)
+	m.PushOp(gno.OpEval)
+	m.Run()
+	res := m.ReapValues(start)
+	return res
+}
+
+// Evaluate any preprocessed expression statically.
+// This is primiarily used by the preprocessor to evaluate
+// static types and values.
+func (m *Machine) EvalStatic(last gno.BlockNode, x gno.Expr) gno.TypedValue {
+	if debug.IsEnabled() {
+		m.Printf("Machine.EvalStatic(%v, %v)\n", last, x)
+	}
+	// X must have been preprocessed.
+	if x.GetAttribute(gno.ATTR_PREPROCESSED) == nil {
+		panic(fmt.Sprintf(
+			"Machine.EvalStatic(x) expression not yet preprocessed: %s",
+			x.String()))
+	}
+	// Temporarily push last to m.Blocks.
+	m.PushBlock(last.GetStaticBlock().GetBlock())
+	// Evaluate x.
+	start := m.NumValues
+	m.PushOp(gno.OpHalt)
+	m.PushOp(gno.OpPopBlock)
+	m.PushExpr(x)
+	m.PushOp(gno.OpEval)
+	m.Run()
+	res := m.ReapValues(start)
+	if len(res) != 1 {
+		panic("should not happen")
+	}
+	return res[0]
+}
+
+// Evaluate the type of any preprocessed expression statically.
+// This is primiarily used by the preprocessor to evaluate
+// static types of nodes.
+func (m *Machine) EvalStaticTypeOf(last gno.BlockNode, x gno.Expr) gno.Type {
+	if debug.IsEnabled() {
+		m.Printf("Machine.EvalStaticTypeOf(%v, %v)\n", last, x)
+	}
+	// X must have been preprocessed.
+	if x.GetAttribute(gno.ATTR_PREPROCESSED) == nil {
+		panic(fmt.Sprintf(
+			"Machine.EvalStaticTypeOf(x) expression not yet preprocessed: %s",
+			x.String()))
+	}
+	// Temporarily push last to m.Blocks.
+	m.PushBlock(last.GetStaticBlock().GetBlock())
+	// Evaluate x.
+	start := m.NumValues
+	m.PushOp(gno.OpHalt)
+	m.PushOp(gno.OpPopBlock)
+	m.PushExpr(x)
+	m.PushOp(gno.OpStaticTypeOf)
+	m.Run()
+	res := m.ReapValues(start)
+	if len(res) != 1 {
+		panic("should not happen")
+	}
+	tv := res[0].V.(gno.TypeValue)
+	return tv.Type
+}
+
+func (m *Machine) RunStatement(s gno.Stmt) {
+	sn := m.LastBlock().GetSource(m.Store)
+	s = gno.Preprocess(m.Store, sn, s).(gno.Stmt)
+	m.PushOp(gno.OpHalt)
+	m.PushStmt(s)
+	m.PushOp(gno.OpExec)
+	m.Run()
+}
+
+// Runs a declaration after preprocessing d.  If d was already
+// preprocessed, call runDeclaration() instead.
+// This function is primarily for testing, so no blocknodes are
+// saved to store, and declarations are not realm compatible.
+// NOTE: to support realm persistence of types, must
+// first require the validation of blocknode locations.
+func (m *Machine) RunDeclaration(d gno.Decl) {
+	if fd, ok := d.(*gno.FuncDecl); ok && fd.Name == "init" {
+		// XXX or, consider running it, but why would this be needed?
+		// from a repl there is no need for init() functions.
+		// Also, there are complications with realms, where
+		// the realm must be persisted before init(), and persisted again.
+		panic("Machine.RunDeclaration cannot be used for init functions")
+	}
+	// Preprocess input using package block.  There should only
+	// be one block right now, and it's a *PackageNode.
+	pn := m.LastBlock().GetSource(m.Store).(*gno.PackageNode)
+	d = gno.Preprocess(m.Store, pn, d).(gno.Decl)
+	// do not SaveBlockNodes(m.Store, d).
+	pn.PrepareNewValues(m.Package)
+	m.runDeclaration(d)
+	if debug.IsEnabled() {
+		if pn != m.Package.GetBlock(m.Store).GetSource(m.Store) {
+			panic("package mismatch")
+		}
+	}
+}
+
+// Declarations to be run within a body (not at the file or
+// package level, for which evaluations happen during
+// preprocessing).
+func (m *Machine) runDeclaration(d gno.Decl) {
+	switch d := d.(type) {
+	case *gno.FuncDecl:
+		// nothing to do.
+		// closure and package already set
+		// during PackageNode.NewPackage().
+	case *gno.ValueDecl:
+		m.PushOp(gno.OpHalt)
+		m.PushStmt(d)
+		m.PushOp(gno.OpExec)
+		m.Run()
+	case *gno.TypeDecl:
+		m.PushOp(gno.OpHalt)
+		m.PushStmt(d)
+		m.PushOp(gno.OpExec)
+		m.Run()
+	default:
+		// Do nothing for package constants.
+	}
+}
+
+const GasFactorCPU int64 = 1
+
+//----------------------------------------
+// "CPU" steps.
+
+func (m *Machine) incrCPU(cycles int64) {
+	if m.GasMeter != nil {
+		gasCPU := overflow.Mul64p(cycles, GasFactorCPU)
+		m.GasMeter.ConsumeGas(gasCPU, "CPUCycles")
+	}
+
+	m.Cycles += cycles
+	if m.MaxCycles != 0 && m.Cycles > m.MaxCycles {
+		panic("CPU cycle overrun")
+	}
+}
+
+const (
+	// CPU cycles
+	/* Control operators */
+	OpCPUInvalid             = 1
+	OpCPUHalt                = 1
+	OpCPUNoop                = 1
+	OpCPUExec                = 25
+	OpCPUPrecall             = 207
+	OpCPUCall                = 256
+	OpCPUCallNativeBody      = 424
+	OpCPUReturn              = 38
+	OpCPUReturnFromBlock     = 36
+	OpCPUReturnToBlock       = 23
+	OpCPUDefer               = 64
+	OpCPUCallDeferNativeBody = 33
+	OpCPUGo                  = 1 // Not yet implemented
+	OpCPUSelect              = 1 // Not yet implemented
+	OpCPUSwitchClause        = 38
+	OpCPUSwitchClauseCase    = 143
+	OpCPUTypeSwitch          = 171
+	OpCPUIfCond              = 38
+	OpCPUPopValue            = 1
+	OpCPUPopResults          = 1
+	OpCPUPopBlock            = 3
+	OpCPUPopFrameAndReset    = 15
+	OpCPUPanic1              = 121
+	OpCPUPanic2              = 21
+
+	/* Unary & binary operators */
+	OpCPUUpos  = 7
+	OpCPUUneg  = 25
+	OpCPUUnot  = 6
+	OpCPUUxor  = 14
+	OpCPUUrecv = 1 // Not yet implemented
+	OpCPULor   = 26
+	OpCPULand  = 24
+	OpCPUEql   = 160
+	OpCPUNeq   = 95
+	OpCPULss   = 13
+	OpCPULeq   = 19
+	OpCPUGtr   = 20
+	OpCPUGeq   = 26
+	OpCPUAdd   = 18
+	OpCPUSub   = 6
+	OpCPUBor   = 23
+	OpCPUXor   = 13
+	OpCPUMul   = 19
+	OpCPUQuo   = 16
+	OpCPURem   = 18
+	OpCPUShl   = 22
+	OpCPUShr   = 20
+	OpCPUBand  = 9
+	OpCPUBandn = 15
+
+	/* Other expression operators */
+	OpCPUEval        = 29
+	OpCPUBinary1     = 19
+	OpCPUIndex1      = 77
+	OpCPUIndex2      = 195
+	OpCPUSelector    = 32
+	OpCPUSlice       = 103
+	OpCPUStar        = 40
+	OpCPURef         = 125
+	OpCPUTypeAssert1 = 30
+	OpCPUTypeAssert2 = 25
+	// TODO: OpCPUStaticTypeOf is an arbitrary number.
+	// A good way to benchmark this is yet to be determined.
+	OpCPUStaticTypeOf = 100
+	OpCPUCompositeLit = 50
+	OpCPUArrayLit     = 137
+	OpCPUSliceLit     = 183
+	OpCPUSliceLit2    = 467
+	OpCPUMapLit       = 475
+	OpCPUStructLit    = 179
+	OpCPUFuncLit      = 61
+	OpCPUConvert      = 16
+
+	/* Native operators */
+	OpCPUArrayLitGoNative  = 137
+	OpCPUSliceLitGoNative  = 183
+	OpCPUStructLitGoNative = 179
+	OpCPUCallGoNative      = 256
+
+	/* Type operators */
+	OpCPUFieldType       = 59
+	OpCPUArrayType       = 57
+	OpCPUSliceType       = 55
+	OpCPUPointerType     = 1 // Not yet implemented
+	OpCPUInterfaceType   = 75
+	OpCPUChanType        = 57
+	OpCPUFuncType        = 81
+	OpCPUMapType         = 59
+	OpCPUStructType      = 174
+	OpCPUMaybeNativeType = 67
+
+	/* Statement operators */
+	OpCPUAssign      = 79
+	OpCPUAddAssign   = 85
+	OpCPUSubAssign   = 57
+	OpCPUMulAssign   = 55
+	OpCPUQuoAssign   = 50
+	OpCPURemAssign   = 46
+	OpCPUBandAssign  = 54
+	OpCPUBandnAssign = 44
+	OpCPUBorAssign   = 55
+	OpCPUXorAssign   = 48
+	OpCPUShlAssign   = 68
+	OpCPUShrAssign   = 76
+	OpCPUDefine      = 111
+	OpCPUInc         = 76
+	OpCPUDec         = 46
+
+	/* Decl operators */
+	OpCPUValueDecl = 113
+	OpCPUTypeDecl  = 100
+
+	/* Loop (sticky) operators (>= 0xD0) */
+	OpCPUSticky            = 1 // Not a real op
+	OpCPUBody              = 43
+	OpCPUForLoop           = 27
+	OpCPURangeIter         = 105
+	OpCPURangeIterString   = 55
+	OpCPURangeIterMap      = 48
+	OpCPURangeIterArrayPtr = 46
+	OpCPUReturnCallDefers  = 78
+)
+
+//----------------------------------------
+// main run loop.
+
+func (m *Machine) Run() {
+	if bm.OpsEnabled {
+		defer func() {
+			// output each machine run results to file
+			bm.FinishRun()
+		}()
+	}
+	defer func() {
+		r := recover()
+
+		if r != nil {
+			switch r := r.(type) {
+			case *gno.Exception:
+				m.Panic(r.Value)
+				m.Run()
+			default:
+				panic(r)
+			}
+		}
+	}()
+
+	for {
+		if enabled, _, _ := m.Debugger.GetStatus(); enabled {
+
+			m.Debug()
+		}
+		op := m.PopOp()
+		if bm.OpsEnabled {
+			// benchmark the operation.
+			bm.StartOpCode(byte(gno.OpVoid))
+			bm.StopOpCode()
+			// we do not benchmark static evaluation.
+			if op != gno.OpStaticTypeOf {
+				bm.StartOpCode(byte(op))
+			}
+		}
+		// TODO: this can be optimized manually, even into tiers.
+		switch op {
+		/* Control operators */
+		case gno.OpHalt:
+			m.incrCPU(OpCPUHalt)
+			if bm.OpsEnabled {
+				bm.StopOpCode()
+			}
+			return
+		case gno.OpNoop:
+			m.incrCPU(OpCPUNoop)
+			continue
+		case gno.OpExec:
+			m.incrCPU(OpCPUExec)
+			m.DoOpExec(op)
+		case gno.OpPrecall:
+			m.incrCPU(OpCPUPrecall)
+			m.DoOpPrecall()
+		case gno.OpCall:
+			MarkCoverage(int(gno.OpCall))
+			m.incrCPU(OpCPUCall)
+			m.DoOpCall()
+		case gno.OpCallNativeBody:
+			m.incrCPU(OpCPUCallNativeBody)
+			m.DoOpCallNativeBody()
+		case gno.OpReturn:
+			m.incrCPU(OpCPUReturn)
+			m.DoOpReturn()
+		case gno.OpReturnFromBlock:
+			m.incrCPU(OpCPUReturnFromBlock)
+			m.DoOpReturnFromBlock()
+		case gno.OpReturnToBlock:
+			m.incrCPU(OpCPUReturnToBlock)
+			m.DoOpReturnToBlock()
+		case gno.OpDefer:
+			MarkCoverage(int(gno.OpDefer))
+			m.incrCPU(OpCPUDefer)
+			m.DoOpDefer()
+		case gno.OpPanic1:
+			MarkCoverage(int(gno.OpPanic1))
+			m.incrCPU(OpCPUPanic1)
+			m.DoOpPanic1()
+		case gno.OpPanic2:
+			MarkCoverage(int(gno.OpPanic2))
+			m.incrCPU(OpCPUPanic2)
+			m.DoOpPanic2()
+		case gno.OpCallDeferNativeBody:
+			m.incrCPU(OpCPUCallDeferNativeBody)
+			m.DoOpCallDeferNativeBody()
+		case gno.OpGo:
+			m.incrCPU(OpCPUGo)
+			panic("not yet implemented")
+		case gno.OpSelect:
+			MarkCoverage(int(gno.OpSelect))
+			m.incrCPU(OpCPUSelect)
+			panic("not yet implemented")
+		case gno.OpSwitchClause:
+			MarkCoverage(int(gno.OpSwitchClause))
+			m.incrCPU(OpCPUSwitchClause)
+			m.DoOpSwitchClause()
+		case gno.OpSwitchClauseCase:
+			MarkCoverage(int(gno.OpSwitchClauseCase))
+			m.incrCPU(OpCPUSwitchClauseCase)
+			m.DoOpSwitchClauseCase()
+		case gno.OpTypeSwitch:
+			m.incrCPU(OpCPUTypeSwitch)
+			m.DoOpTypeSwitch()
+		case gno.OpIfCond:
+			// ★★★★★ coverage mark
+			MarkCoverage(int(gno.OpIfCond))
+			m.incrCPU(OpCPUIfCond)
+			m.DoOpIfCond()
+		case gno.OpPopValue:
+			m.incrCPU(OpCPUPopValue)
+			m.PopValue()
+		case gno.OpPopResults:
+			m.incrCPU(OpCPUPopResults)
+			m.PopResults()
+		case gno.OpPopBlock:
+			m.incrCPU(OpCPUPopBlock)
+			m.PopBlock()
+		case gno.OpPopFrameAndReset:
+			m.incrCPU(OpCPUPopFrameAndReset)
+			m.PopFrameAndReset()
+		/* Unary operators */
+		case gno.OpUpos:
+			m.incrCPU(OpCPUUpos)
+			m.DoOpUpos()
+		case gno.OpUneg:
+			m.incrCPU(OpCPUUneg)
+			m.DoOpUneg()
+		case gno.OpUnot:
+			m.incrCPU(OpCPUUnot)
+			m.DoOpUnot()
+		case gno.OpUxor:
+			m.incrCPU(OpCPUUxor)
+			m.DoOpUxor()
+		case gno.OpUrecv:
+			m.incrCPU(OpCPUUrecv)
+			m.DoOpUrecv()
+		/* Binary operators */
+		case gno.OpLor:
+			m.incrCPU(OpCPULor)
+			m.DoOpLor()
+		case gno.OpLand:
+			m.incrCPU(OpCPULand)
+			m.DoOpLand()
+		case gno.OpEql:
+			m.incrCPU(OpCPUEql)
+			m.DoOpEql()
+		case gno.OpNeq:
+			m.incrCPU(OpCPUNeq)
+			m.DoOpNeq()
+		case gno.OpLss:
+			m.incrCPU(OpCPULss)
+			m.DoOpLss()
+		case gno.OpLeq:
+			m.incrCPU(OpCPULeq)
+			m.DoOpLeq()
+		case gno.OpGtr:
+			m.incrCPU(OpCPUGtr)
+			m.DoOpGtr()
+		case gno.OpGeq:
+			m.incrCPU(OpCPUGeq)
+			m.DoOpGeq()
+		case gno.OpAdd:
+			m.incrCPU(OpCPUAdd)
+			m.DoOpAdd()
+		case gno.OpSub:
+			m.incrCPU(OpCPUSub)
+			m.DoOpSub()
+		case gno.OpBor:
+			m.incrCPU(OpCPUBor)
+			m.DoOpBor()
+		case gno.OpXor:
+			m.incrCPU(OpCPUXor)
+			m.DoOpXor()
+		case gno.OpMul:
+			m.incrCPU(OpCPUMul)
+			m.DoOpMul()
+		case gno.OpQuo:
+			m.incrCPU(OpCPUQuo)
+			m.DoOpQuo()
+		case gno.OpRem:
+			m.incrCPU(OpCPURem)
+			m.DoOpRem()
+		case gno.OpShl:
+			m.incrCPU(OpCPUShl)
+			m.DoOpShl()
+		case gno.OpShr:
+			m.incrCPU(OpCPUShr)
+			m.DoOpShr()
+		case gno.OpBand:
+			m.incrCPU(OpCPUBand)
+			m.DoOpBand()
+		case gno.OpBandn:
+			m.incrCPU(OpCPUBandn)
+			m.DoOpBandn()
+		/* Expression operators */
+		case gno.OpEval:
+			m.incrCPU(OpCPUEval)
+			m.DoOpEval()
+		case gno.OpBinary1:
+			m.incrCPU(OpCPUBinary1)
+			m.DoOpBinary1()
+		case gno.OpIndex1:
+			m.incrCPU(OpCPUIndex1)
+			m.DoOpIndex1()
+		case gno.OpIndex2:
+			m.incrCPU(OpCPUIndex2)
+			m.DoOpIndex2()
+		case gno.OpSelector:
+			m.incrCPU(OpCPUSelector)
+			m.DoOpSelector()
+		case gno.OpSlice:
+			m.incrCPU(OpCPUSlice)
+			m.DoOpSlice()
+		case gno.OpStar:
+			m.incrCPU(OpCPUStar)
+			m.DoOpStar()
+		case gno.OpRef:
+			m.incrCPU(OpCPURef)
+			m.DoOpRef()
+		case gno.OpTypeAssert1:
+			m.incrCPU(OpCPUTypeAssert1)
+			m.DoOpTypeAssert1()
+		case gno.OpTypeAssert2:
+			m.incrCPU(OpCPUTypeAssert2)
+			m.DoOpTypeAssert2()
+		case gno.OpStaticTypeOf:
+			m.incrCPU(OpCPUStaticTypeOf)
+			m.DoOpStaticTypeOf()
+		case gno.OpCompositeLit:
+			m.incrCPU(OpCPUCompositeLit)
+			m.DoOpCompositeLit()
+		case gno.OpArrayLit:
+			m.incrCPU(OpCPUArrayLit)
+			m.DoOpArrayLit()
+		case gno.OpSliceLit:
+			m.incrCPU(OpCPUSliceLit)
+			m.DoOpSliceLit()
+		case gno.OpSliceLit2:
+			m.incrCPU(OpCPUSliceLit2)
+			m.DoOpSliceLit2()
+		case gno.OpFuncLit:
+			m.incrCPU(OpCPUFuncLit)
+			m.DoOpFuncLit()
+		case gno.OpMapLit:
+			m.incrCPU(OpCPUMapLit)
+			m.DoOpMapLit()
+		case gno.OpStructLit:
+			m.incrCPU(OpCPUStructLit)
+			m.DoOpStructLit()
+		case gno.OpConvert:
+			m.incrCPU(OpCPUConvert)
+			m.DoOpConvert()
+		/* GoNative Operators */
+		case gno.OpArrayLitGoNative:
+			m.incrCPU(OpCPUArrayLitGoNative)
+			m.DoOpArrayLitGoNative()
+		case gno.OpSliceLitGoNative:
+			m.incrCPU(OpCPUSliceLitGoNative)
+			m.DoOpSliceLitGoNative()
+		case gno.OpStructLitGoNative:
+			m.incrCPU(OpCPUStructLitGoNative)
+			m.DoOpStructLitGoNative()
+		case gno.OpCallGoNative:
+			m.incrCPU(OpCPUCallGoNative)
+			m.DoOpCallGoNative()
+		/* Type operators */
+		case gno.OpFieldType:
+			m.incrCPU(OpCPUFieldType)
+			m.DoOpFieldType()
+		case gno.OpArrayType:
+			m.incrCPU(OpCPUArrayType)
+			m.DoOpArrayType()
+		case gno.OpSliceType:
+			m.incrCPU(OpCPUSliceType)
+			m.DoOpSliceType()
+		case gno.OpChanType:
+			m.incrCPU(OpCPUChanType)
+			m.DoOpChanType()
+		case gno.OpFuncType:
+			m.incrCPU(OpCPUFuncType)
+			m.DoOpFuncType()
+		case gno.OpMapType:
+			m.incrCPU(OpCPUMapType)
+			m.DoOpMapType()
+		case gno.OpStructType:
+			m.incrCPU(OpCPUStructType)
+			m.DoOpStructType()
+		case gno.OpInterfaceType:
+			m.incrCPU(OpCPUInterfaceType)
+			m.DoOpInterfaceType()
+		case gno.OpMaybeNativeType:
+			m.incrCPU(OpCPUMaybeNativeType)
+			m.DoOpMaybeNativeType()
+		/* Statement operators */
+		case gno.OpAssign:
+			m.incrCPU(OpCPUAssign)
+			m.DoOpAssign()
+		case gno.OpAddAssign:
+			m.incrCPU(OpCPUAddAssign)
+			m.DoOpAddAssign()
+		case gno.OpSubAssign:
+			m.incrCPU(OpCPUSubAssign)
+			m.DoOpSubAssign()
+		case gno.OpMulAssign:
+			m.incrCPU(OpCPUMulAssign)
+			m.DoOpMulAssign()
+		case gno.OpQuoAssign:
+			m.incrCPU(OpCPUQuoAssign)
+			m.DoOpQuoAssign()
+		case gno.OpRemAssign:
+			m.incrCPU(OpCPURemAssign)
+			m.DoOpRemAssign()
+		case gno.OpBandAssign:
+			m.incrCPU(OpCPUBandAssign)
+			m.DoOpBandAssign()
+		case gno.OpBandnAssign:
+			m.incrCPU(OpCPUBandnAssign)
+			m.DoOpBandnAssign()
+		case gno.OpBorAssign:
+			m.incrCPU(OpCPUBorAssign)
+			m.DoOpBorAssign()
+		case gno.OpXorAssign:
+			m.incrCPU(OpCPUXorAssign)
+			m.DoOpXorAssign()
+		case gno.OpShlAssign:
+			m.incrCPU(OpCPUShlAssign)
+			m.DoOpShlAssign()
+		case gno.OpShrAssign:
+			m.incrCPU(OpCPUShrAssign)
+			m.DoOpShrAssign()
+		case gno.OpDefine:
+			m.incrCPU(OpCPUDefine)
+			m.DoOpDefine()
+		case gno.OpInc:
+			m.incrCPU(OpCPUInc)
+			m.DoOpInc()
+		case gno.OpDec:
+			m.incrCPU(OpCPUDec)
+			m.DoOpDec()
+		/* Decl operators */
+		case gno.OpValueDecl:
+			m.incrCPU(OpCPUValueDecl)
+			m.DoOpValueDecl()
+		case gno.OpTypeDecl:
+			m.incrCPU(OpCPUTypeDecl)
+			m.DoOpTypeDecl()
+		/* Loop (sticky) operators */
+		case gno.OpBody:
+			m.incrCPU(OpCPUBody)
+			m.DoOpExec(op)
+		case gno.OpForLoop:
+			m.incrCPU(OpCPUForLoop)
+			// ★★★★★ coverage mark
+			MarkCoverage(int(gno.OpForLoop))
+			m.DoOpExec(op)
+		case gno.OpRangeIter:
+			MarkCoverage(int(gno.OpRangeIter))
+			m.incrCPU(OpCPURangeIter)
+			m.DoOpExec(op)
+		case gno.OpRangeIterArrayPtr:
+			MarkCoverage(int(gno.OpRangeIterArrayPtr))
+			m.incrCPU(OpCPURangeIterArrayPtr)
+			m.DoOpExec(op)
+		case gno.OpRangeIterString:
+			MarkCoverage(int(gno.OpRangeIterString))
+			m.incrCPU(OpCPURangeIterString)
+			m.DoOpExec(op)
+		case gno.OpRangeIterMap:
+			MarkCoverage(int(gno.OpRangeIterMap))
+			m.incrCPU(OpCPURangeIterMap)
+			m.DoOpExec(op)
+		case gno.OpReturnCallDefers:
+			m.incrCPU(OpCPUReturnCallDefers)
+			m.DoOpReturnCallDefers()
+		default:
+			panic(fmt.Sprintf("unexpected opcode %s", op.String()))
+		}
+		if bm.OpsEnabled {
+			if op != gno.OpStaticTypeOf {
+				bm.StopOpCode()
+			}
+		}
+	}
+}
+
+//----------------------------------------
+// push pop methods.
+
+func (m *Machine) PushOp(op gno.Op) {
+	if debug.IsEnabled() {
+		m.Printf("+o %v\n", op)
+	}
+	if len(m.Ops) == m.NumOps {
+		// TODO tune. also see PushValue().
+		newOps := make([]gno.Op, len(m.Ops)*2)
+		copy(newOps, m.Ops)
+		m.Ops = newOps
+	}
+
+	m.Ops[m.NumOps] = op
+	m.NumOps++
+}
+
+func (m *Machine) PopOp() gno.Op {
+	numOps := m.NumOps
+	op := m.Ops[numOps-1]
+	if debug.IsEnabled() {
+		m.Printf("-o %v\n", op)
+	}
+	if gno.OpSticky <= op {
+		// do not pop persistent op types.
+	} else {
+		m.NumOps--
+	}
+	return op
+}
+
+func (m *Machine) ForcePopOp() {
+	if debug.IsEnabled() {
+		m.Printf("-o! %v\n", m.Ops[m.NumOps-1])
+	}
+	m.NumOps--
+}
+
+// Offset starts at 1.
+// DEPRECATED use PeekStmt1() instead.
+func (m *Machine) PeekStmt(offset int) gno.Stmt {
+	if debug.IsEnabled() {
+		if offset != 1 {
+			panic("should not happen")
+		}
+	}
+	return m.Stmts[len(m.Stmts)-offset]
+}
+
+func (m *Machine) PeekStmt1() gno.Stmt {
+	numStmts := len(m.Stmts)
+	s := m.Stmts[numStmts-1]
+	if bs, ok := s.(*gno.BodyStmt); ok {
+		return bs.Active
+	} else {
+		return m.Stmts[numStmts-1]
+	}
+}
+
+func (m *Machine) PushStmt(s gno.Stmt) {
+	if debug.IsEnabled() {
+		m.Printf("+s %v\n", s)
+	}
+	m.Stmts = append(m.Stmts, s)
+}
+
+func (m *Machine) PushStmts(ss ...gno.Stmt) {
+	if debug.IsEnabled() {
+		for _, s := range ss {
+			m.Printf("+s %v\n", s)
+		}
+	}
+	m.Stmts = append(m.Stmts, ss...)
+}
+
+func (m *Machine) PopStmt() gno.Stmt {
+	numStmts := len(m.Stmts)
+	s := m.Stmts[numStmts-1]
+	if debug.IsEnabled() {
+		m.Printf("-s %v\n", s)
+	}
+	if bs, ok := s.(*gno.BodyStmt); ok {
+		return bs.PopActiveStmt()
+	}
+
+	m.Stmts = m.Stmts[:numStmts-1]
+
+	return s
+}
+
+func (m *Machine) ForcePopStmt() (s gno.Stmt) {
+	numStmts := len(m.Stmts)
+	s = m.Stmts[numStmts-1]
+	if debug.IsEnabled() {
+		m.Printf("-s %v\n", s)
+	}
+	// TODO debug lines and assertions.
+	m.Stmts = m.Stmts[:len(m.Stmts)-1]
+	return
+}
+
+// Offset starts at 1.
+func (m *Machine) PeekExpr(offset int) gno.Expr {
+	return m.Exprs[len(m.Exprs)-offset]
+}
+
+func (m *Machine) PushExpr(x gno.Expr) {
+	if debug.IsEnabled() {
+		m.Printf("+x %v\n", x)
+	}
+	m.Exprs = append(m.Exprs, x)
+}
+
+func (m *Machine) PopExpr() gno.Expr {
+	numExprs := len(m.Exprs)
+	x := m.Exprs[numExprs-1]
+	if debug.IsEnabled() {
+		m.Printf("-x %v\n", x)
+	}
+	m.Exprs = m.Exprs[:numExprs-1]
+	return x
+}
+
+// Returns reference to value in Values stack.  Offset starts at 1.
+func (m *Machine) PeekValue(offset int) *gno.TypedValue {
+	return &m.Values[m.NumValues-offset]
+}
+
+// XXX delete?
+func (m *Machine) PeekType(offset int) gno.Type {
+	return m.Values[m.NumValues-offset].T
+}
+
+func (m *Machine) PushValue(tv gno.TypedValue) {
+	if debug.IsEnabled() {
+		m.Printf("+v %v\n", tv)
+	}
+	if len(m.Values) == m.NumValues {
+		// TODO tune. also see PushOp().
+		newValues := make([]gno.TypedValue, len(m.Values)*2)
+		copy(newValues, m.Values)
+		m.Values = newValues
+	}
+	m.Values[m.NumValues] = tv
+	m.NumValues++
+}
+
+// Resulting reference is volatile.
+func (m *Machine) PopValue() (tv *gno.TypedValue) {
+	tv = &m.Values[m.NumValues-1]
+	if debug.IsEnabled() {
+		m.Printf("-v %v\n", tv)
+	}
+	m.NumValues--
+	return tv
+}
+
+// Returns a slice of n values in the stack and decrements NumValues.
+// NOTE: The results are on the values stack, so they must be copied or used
+// immediately.  If you need to use the machine before or during usage,
+// consider using PopCopyValues().
+// NOTE: the values are in stack order, oldest first, the opposite order of
+// multiple pop calls.  This is used for params assignment, for example.
+func (m *Machine) PopValues(n int) []gno.TypedValue {
+	if debug.IsEnabled() {
+		for i := 0; i < n; i++ {
+			tv := m.Values[m.NumValues-n+i]
+			m.Printf("-vs[%d/%d] %v\n", i, n, tv)
+		}
+	}
+	m.NumValues -= n
+	return m.Values[m.NumValues : m.NumValues+n]
+}
+
+// Like PopValues(), but copies the values onto a new slice.
+func (m *Machine) PopCopyValues(n int) []gno.TypedValue {
+	res := make([]gno.TypedValue, n)
+	ptvs := m.PopValues(n)
+	copy(res, ptvs)
+	return res
+}
+
+// Decrements NumValues by number of last results.
+func (m *Machine) PopResults() {
+	if debug.IsEnabled() {
+		for i := 0; i < m.NumResults; i++ {
+			m.PopValue()
+		}
+	} else {
+		m.NumValues -= m.NumResults
+	}
+	m.NumResults = 0
+}
+
+// Pops values with index start or greater.
+func (m *Machine) ReapValues(start int) []gno.TypedValue {
+	end := m.NumValues
+	rs := make([]gno.TypedValue, end-start)
+	copy(rs, m.Values[start:end])
+	m.NumValues = start
+	return rs
+}
+
+func (m *Machine) PushBlock(b *gno.Block) {
+	if debug.IsEnabled() {
+		m.Println("+B")
+	}
+	m.Blocks = append(m.Blocks, b)
+}
+
+func (m *Machine) PopBlock() (b *gno.Block) {
+	if debug.IsEnabled() {
+		m.Println("-B")
+	}
+	numBlocks := len(m.Blocks)
+	b = m.Blocks[numBlocks-1]
+	m.Blocks = m.Blocks[:numBlocks-1]
+	return b
+}
+
+// The result is a volatile reference in the machine's type stack.
+// Mutate and forget.
+func (m *Machine) LastBlock() *gno.Block {
+	return m.Blocks[len(m.Blocks)-1]
+}
+
+// Pushes a frame with one less statement.
+func (m *Machine) PushFrameBasic(s gno.Stmt) {
+	label := s.GetLabel()
+	fr := &gno.Frame{
+		Label:     label,
+		Source:    s,
+		NumOps:    m.NumOps,
+		NumValues: m.NumValues,
+		NumExprs:  len(m.Exprs),
+		NumStmts:  len(m.Stmts),
+		NumBlocks: len(m.Blocks),
+	}
+	if debug.IsEnabled() {
+		m.Printf("+F %#v\n", fr)
+	}
+	m.Frames = append(m.Frames, fr)
+}
+
+// TODO: track breaks/panics/returns on frame and
+// ensure the counts are consistent, otherwise we mask
+// bugs with frame pops.
+func (m *Machine) PushFrameCall(cx *gno.CallExpr, fv *gno.FuncValue, recv gno.TypedValue) {
+	fr := &gno.Frame{
+		Source:      cx,
+		NumOps:      m.NumOps,
+		NumValues:   m.NumValues - cx.NumArgs - 1,
+		NumExprs:    len(m.Exprs),
+		NumStmts:    len(m.Stmts),
+		NumBlocks:   len(m.Blocks),
+		Func:        fv,
+		GoFunc:      nil,
+		Receiver:    recv,
+		NumArgs:     cx.NumArgs,
+		IsVarg:      cx.Varg,
+		Defers:      nil,
+		LastPackage: m.Package,
+		LastRealm:   m.Realm,
+	}
+	if debug.IsEnabled() {
+		if m.Package == nil {
+			panic("should not happen")
+		}
+	}
+	if debug.IsEnabled() {
+		m.Printf("+F %#v\n", fr)
+	}
+	m.Frames = append(m.Frames, fr)
+	pv := fv.GetPackage(m.Store)
+	if pv == nil {
+		panic(fmt.Sprintf("package value missing in store: %s", fv.PkgPath))
+	}
+	rlm := pv.GetRealm()
+	if rlm == nil && recv.IsDefined() {
+		obj := recv.GetFirstObject(m.Store)
+		if obj == nil {
+			// could be a nil receiver.
+			// just ignore.
+		} else {
+			recvOID := obj.GetObjectInfo().ID
+			if !recvOID.IsZero() {
+				// override the pv and rlm with receiver's.
+				recvPkgOID := gno.ObjectIDFromPkgID(recvOID.PkgID)
+				pv = m.Store.GetObject(recvPkgOID).(*gno.PackageValue)
+				rlm = pv.GetRealm() // done
+			}
+		}
+	}
+	m.Package = pv
+	if rlm != nil && m.Realm != rlm {
+		m.Realm = rlm // enter new realm
+	}
+}
+
+func (m *Machine) PushFrameGoNative(cx *gno.CallExpr, fv *gno.NativeValue) {
+	fr := &gno.Frame{
+		Source:      cx,
+		NumOps:      m.NumOps,
+		NumValues:   m.NumValues - cx.NumArgs - 1,
+		NumExprs:    len(m.Exprs),
+		NumStmts:    len(m.Stmts),
+		NumBlocks:   len(m.Blocks),
+		Func:        nil,
+		GoFunc:      fv,
+		Receiver:    gno.TypedValue{},
+		NumArgs:     cx.NumArgs,
+		IsVarg:      cx.Varg,
+		Defers:      nil,
+		LastPackage: m.Package,
+		LastRealm:   m.Realm,
+	}
+	if debug.IsEnabled() {
+		m.Printf("+F %#v\n", fr)
+	}
+	m.Frames = append(m.Frames, fr)
+	// keep m.Package the same.
+}
+
+func (m *Machine) PopFrame() gno.Frame {
+	numFrames := len(m.Frames)
+	f := m.Frames[numFrames-1]
+	f.Popped = true
+	if debug.IsEnabled() {
+		m.Printf("-F %#v\n", f)
+	}
+	m.Frames = m.Frames[:numFrames-1]
+
+	return *f
+}
+
+func (m *Machine) PopFrameAndReset() {
+	fr := m.PopFrame()
+	fr.Popped = true
+	m.NumOps = fr.NumOps
+	m.NumValues = fr.NumValues
+	m.Exprs = m.Exprs[:fr.NumExprs]
+	m.Stmts = m.Stmts[:fr.NumStmts]
+	m.Blocks = m.Blocks[:fr.NumBlocks]
+	m.PopStmt() // may be sticky
+}
+
+// TODO: optimize by passing in last frame.
+func (m *Machine) PopFrameAndReturn() {
+	fr := m.PopFrame()
+	fr.Popped = true
+	if debug.IsEnabled() {
+		if !fr.IsCall() {
+			panic("unexpected non-call (loop) frame")
+		}
+	}
+	rtypes := fr.Func.GetType(m.Store).Results
+	numRes := len(rtypes)
+	m.NumOps = fr.NumOps
+	m.NumResults = numRes
+	m.Exprs = m.Exprs[:fr.NumExprs]
+	m.Stmts = m.Stmts[:fr.NumStmts]
+	m.Blocks = m.Blocks[:fr.NumBlocks]
+	// shift and convert results to typed-nil if undefined and not iface
+	// kind.  and not func result type isn't interface kind.
+	resStart := m.NumValues - numRes
+	for i := 0; i < numRes; i++ {
+		res := m.Values[resStart+i]
+		if res.IsUndefined() && rtypes[i].Type.Kind() != gno.InterfaceKind {
+			res.T = rtypes[i].Type
+		}
+		m.Values[fr.NumValues+i] = res
+	}
+	m.NumValues = fr.NumValues + numRes
+	m.Package = fr.LastPackage
+	m.Realm = fr.LastRealm
+}
+
+func (m *Machine) PeekFrameAndContinueFor() {
+	fr := m.LastFrame()
+	m.NumOps = fr.NumOps + 1
+	m.NumValues = fr.NumValues
+	m.Exprs = m.Exprs[:fr.NumExprs]
+	m.Stmts = m.Stmts[:fr.NumStmts+1]
+	m.Blocks = m.Blocks[:fr.NumBlocks+1]
+	ls := m.PeekStmt(1).(*gno.BodyStmt)
+	ls.NextBodyIndex = ls.BodyLen
+}
+
+func (m *Machine) PeekFrameAndContinueRange() {
+	fr := m.LastFrame()
+	m.NumOps = fr.NumOps + 1
+	m.NumValues = fr.NumValues + 1
+	m.Exprs = m.Exprs[:fr.NumExprs]
+	m.Stmts = m.Stmts[:fr.NumStmts+1]
+	m.Blocks = m.Blocks[:fr.NumBlocks+1]
+	ls := m.PeekStmt(1).(*gno.BodyStmt)
+	ls.NextBodyIndex = ls.BodyLen
+}
+
+func (m *Machine) NumFrames() int {
+	return len(m.Frames)
+}
+
+func (m *Machine) LastFrame() *gno.Frame {
+	return m.Frames[len(m.Frames)-1]
+}
+
+// MustLastCallFrame returns the last call frame with an offset of n. It panics if the frame is not found.
+func (m *Machine) MustLastCallFrame(n int) *gno.Frame {
+	return m.lastCallFrame(n, true)
+}
+
+// LastCallFrame behaves the same as MustLastCallFrame, but rather than panicking,
+// returns nil if the frame is not found.
+func (m *Machine) LastCallFrame(n int) *gno.Frame {
+	return m.lastCallFrame(n, false)
+}
+
+// TODO: this function and PopUntilLastCallFrame() is used in conjunction
+// spanning two disjoint operations upon return. Optimize.
+// If n is 1, returns the immediately last call frame.
+func (m *Machine) lastCallFrame(n int, mustBeFound bool) *gno.Frame {
+	if n == 0 {
+		panic("n must be positive")
+	}
+	for i := len(m.Frames) - 1; i >= 0; i-- {
+		fr := m.Frames[i]
+		if fr.IsCall() {
+			if n == 1 {
+				return fr
+			} else {
+				n-- // continue
+			}
+		}
+	}
+
+	if mustBeFound {
+		panic("frame not found")
+	}
+
+	return nil
+}
+
+// pops the last non-call (loop) frames
+// and returns the last call frame (which is left on stack).
+func (m *Machine) PopUntilLastCallFrame() *gno.Frame {
+	for i := len(m.Frames) - 1; i >= 0; i-- {
+		fr := m.Frames[i]
+		if fr.IsCall() {
+			m.Frames = m.Frames[:i+1]
+			return fr
+		}
+
+		fr.Popped = true
+	}
+
+	// No frames are popped, so revert all the frames' popped flag.
+	// This is expected to happen infrequently.
+	for _, frame := range m.Frames {
+		frame.Popped = false
+	}
+
+	return nil
+}
+
+func (m *Machine) PushForPointer(lx gno.Expr) {
+	switch lx := lx.(type) {
+	case *gno.NameExpr:
+		// no Lhs eval needed.
+	case *gno.IndexExpr:
+		// evaluate Index
+		m.PushExpr(lx.Index)
+		m.PushOp(gno.OpEval)
+		// evaluate X
+		m.PushExpr(lx.X)
+		m.PushOp(gno.OpEval)
+	case *gno.SelectorExpr:
+		// evaluate X
+		m.PushExpr(lx.X)
+		m.PushOp(gno.OpEval)
+	case *gno.StarExpr:
+		// evaluate X (a reference)
+		m.PushExpr(lx.X)
+		m.PushOp(gno.OpEval)
+	case *gno.CompositeLitExpr: // for *RefExpr e.g. &mystruct{}
+		// evaluate lx.
+		m.PushExpr(lx)
+		m.PushOp(gno.OpEval)
+	default:
+		panic(fmt.Sprintf(
+			"illegal assignment X expression type %v",
+			reflect.TypeOf(lx)))
+	}
+}
+
+func (m *Machine) PopAsPointer(lx gno.Expr) gno.PointerValue {
+	switch lx := lx.(type) {
+	case *gno.NameExpr:
+		switch lx.Type {
+		case gno.NameExprTypeNormal:
+			lb := m.LastBlock()
+			return lb.GetPointerTo(m.Store, lx.Path)
+		case gno.NameExprTypeHeapUse:
+			lb := m.LastBlock()
+			return lb.GetPointerToHeapUse(m.Store, lx.Path)
+		case gno.NameExprTypeHeapClosure:
+			panic("should not happen")
+		default:
+			panic("unexpected NameExpr in PopAsPointer")
+		}
+	case *gno.IndexExpr:
+		iv := m.PopValue()
+		xv := m.PopValue()
+		return xv.GetPointerAtIndex(m.Alloc, m.Store, iv)
+	case *gno.SelectorExpr:
+		xv := m.PopValue()
+		return xv.GetPointerToFromTV(m.Alloc, m.Store, lx.Path)
+	case *gno.StarExpr:
+		ptr := m.PopValue().V.(gno.PointerValue)
+		return ptr
+	case *gno.CompositeLitExpr: // for *RefExpr
+		tv := *m.PopValue()
+		hv := m.Alloc.NewHeapItem(tv)
+		return gno.PointerValue{
+			TV:    &hv.Value,
+			Base:  hv,
+			Index: 0,
+		}
+	default:
+		panic("should not happen")
+	}
+}
+
+// for testing.
+func (m *Machine) CheckEmpty() error {
+	found := ""
+	if m.NumOps > 0 {
+		found = "op"
+	} else if m.NumValues > 0 {
+		found = "value"
+	} else if len(m.Exprs) > 0 {
+		found = "expr"
+	} else if len(m.Stmts) > 0 {
+		found = "stmt"
+	} else if len(m.Blocks) > 0 {
+		for _, b := range m.Blocks {
+			_, isPkg := b.GetSource(m.Store).(*gno.PackageNode)
+			if isPkg {
+				// ok
+			} else {
+				found = "(non-package) block"
+			}
+		}
+	} else if len(m.Frames) > 0 {
+		found = "frame"
+	} else if m.NumResults > 0 {
+		found = ".NumResults != 0"
+	}
+	if found != "" {
+		return fmt.Errorf("found leftover %s", found)
+	} else {
+		return nil
+	}
+}
+
+func (m *Machine) Panic(ex gno.TypedValue) {
+	m.Exceptions = append(
+		m.Exceptions,
+		gno.Exception{
+			Value:      ex,
+			Frame:      m.MustLastCallFrame(1),
+			Stacktrace: m.Stacktrace(),
+		},
+	)
+
+	m.PanicScope++
+	m.PopUntilLastCallFrame()
+	m.PushOp(gno.OpPanic2)
+	m.PushOp(gno.OpReturnCallDefers)
+}
+
+//----------------------------------------
+// inspection methods
+
+func (m *Machine) Println(args ...interface{}) {
+	if debug.IsEnabled() {
+		if *(gno.Enabled) {
+			s := strings.Repeat("|", m.NumOps)
+			debug.Println(append([]interface{}{s}, args...)...)
+		}
+	}
+}
+
+func (m *Machine) Printf(format string, args ...interface{}) {
+	if debug.IsEnabled() {
+		if *(gno.Enabled) {
+			s := strings.Repeat("|", m.NumOps)
+			debug.Printf(s+" "+format, args...)
+		}
+	}
+}
+
+func (m *Machine) String() string {
+	if m == nil {
+		return "Machine:nil"
+	}
+
+	// Calculate some reasonable total length to avoid reallocation
+	// Assuming an average length of 32 characters per string
+	var (
+		vsLength         = m.NumValues * 32
+		ssLength         = len(m.Stmts) * 32
+		xsLength         = len(m.Exprs) * 32
+		bsLength         = 1024
+		obsLength        = len(m.Blocks) * 32
+		fsLength         = len(m.Frames) * 32
+		exceptionsLength = len(m.Exceptions)
+
+		totalLength = vsLength + ssLength + xsLength + bsLength + obsLength + fsLength + exceptionsLength
+	)
+
+	var sb strings.Builder
+	builder := &sb // Pointer for use in fmt.Fprintf.
+	builder.Grow(totalLength)
+
+	fmt.Fprintf(builder, "Machine:\n    PreprocessorMode: %v\n    Op: %v\n    Values: (len: %d)\n", m.PreprocessorMode, m.Ops[:m.NumOps], m.NumValues)
+
+	for i := m.NumValues - 1; i >= 0; i-- {
+		fmt.Fprintf(builder, "          #%d %v\n", i, m.Values[i])
+	}
+
+	builder.WriteString("    Exprs:\n")
+
+	for i := len(m.Exprs) - 1; i >= 0; i-- {
+		fmt.Fprintf(builder, "          #%d %v\n", i, m.Exprs[i])
+	}
+
+	builder.WriteString("    Stmts:\n")
+
+	for i := len(m.Stmts) - 1; i >= 0; i-- {
+		fmt.Fprintf(builder, "          #%d %v\n", i, m.Stmts[i])
+	}
+
+	builder.WriteString("    Blocks:\n")
+
+	for i := len(m.Blocks) - 1; i > 0; i-- {
+		b := m.Blocks[i]
+		if b == nil {
+			continue
+		}
+
+		gen := builder.Len()/3 + 1
+		gens := "@" // strings.Repeat("@", gen)
+
+		if pv, ok := b.Source.(*gno.PackageNode); ok {
+			// package blocks have too much, so just
+			// print the pkgpath.
+			fmt.Fprintf(builder, "          %s(%d) %s\n", gens, gen, pv.PkgPath)
+		} else {
+			bsi := b.StringIndented("            ")
+			fmt.Fprintf(builder, "          %s(%d) %s\n", gens, gen, bsi)
+
+			if b.Source != nil {
+				sb := b.GetSource(m.Store).GetStaticBlock().GetBlock()
+				fmt.Fprintf(builder, " (s vals) %s(%d) %s\n", gens, gen, sb.StringIndented("            "))
+
+				sts := b.GetSource(m.Store).GetStaticBlock().Types
+				fmt.Fprintf(builder, " (s typs) %s(%d) %s\n", gens, gen, sts)
+			}
+		}
+
+		// Update b
+		switch bp := b.Parent.(type) {
+		case nil:
+			b = nil
+		case *gno.Block:
+			b = bp
+		case gno.RefValue:
+			fmt.Fprintf(builder, "            (block ref %v)\n", bp.ObjectID)
+			b = nil
+		default:
+			panic("should not happen")
+		}
+	}
+
+	builder.WriteString("    Blocks (other):\n")
+
+	for i := len(m.Blocks) - 2; i >= 0; i-- {
+		b := m.Blocks[i]
+
+		if b == nil || b.Source == nil {
+			continue
+		}
+
+		if _, ok := b.Source.(*gno.PackageNode); ok {
+			break // done, skip *PackageNode.
+		} else {
+			fmt.Fprintf(builder, "          #%d %s\n", i,
+				b.StringIndented("            "))
+			if b.Source != nil {
+				sb := b.GetSource(m.Store).GetStaticBlock().GetBlock()
+				fmt.Fprintf(builder, " (static) #%d %s\n", i,
+					sb.StringIndented("            "))
+			}
+		}
+	}
+
+	builder.WriteString("    Frames:\n")
+
+	for i := len(m.Frames) - 1; i >= 0; i-- {
+		fmt.Fprintf(builder, "          #%d %s\n", i, m.Frames[i])
+	}
+
+	if m.Realm != nil {
+		fmt.Fprintf(builder, "    Realm:\n      %s\n", m.Realm.Path)
+	}
+
+	builder.WriteString("    Exceptions:\n")
+
+	for _, ex := range m.Exceptions {
+		fmt.Fprintf(builder, "      %s\n", ex.Sprint(&m.Machine))
+	}
+
+	return builder.String()
+}
+
+func (m *Machine) ExceptionsStacktrace() string {
+	if len(m.Exceptions) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+
+	ex := m.Exceptions[0]
+	builder.WriteString("panic: " + ex.Sprint(&m.Machine) + "\n")
+	builder.WriteString(ex.Stacktrace.String())
+
+	switch {
+	case len(m.Exceptions) > 2:
+		fmt.Fprintf(&builder, "... %d panic(s) elided ...\n", len(m.Exceptions)-2)
+		fallthrough // to print last exception
+	case len(m.Exceptions) == 2:
+		ex = m.Exceptions[len(m.Exceptions)-1]
+		builder.WriteString("panic: " + ex.Sprint(&m.Machine) + "\n")
+		builder.WriteString(ex.Stacktrace.String())
+	}
+
+	return builder.String()
+}

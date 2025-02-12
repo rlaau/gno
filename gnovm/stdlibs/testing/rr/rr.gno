@@ -1,6 +1,6 @@
 package main
 
-import "testing/cov"
+import "testing/repl"
 
 func main() {
 	exampleSource := `package rlaau
@@ -25,12 +25,15 @@ func main() {
  				// 더 복잡한 코드 추가 가능
  				return 1
  			})(testing.SomeNumber)
+			for l := 0 ; l <5000 ;l++ {
+			println("real?")
+			}
 
  			println("std로 리턴:", result)
  			return 36
  		}`
 	for i := 0; i < 10; i++ {
-		r := cov.GetCovOfSource(exampleSource)
+		r, _ := repl.RunGNOFileInGoWithCoverage(exampleSource)
 		println("main에서:", len(r))
 	}
 }

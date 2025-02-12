@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+// TODO: 현재 동적 조절까진 가능
+
+var SomeNumber int = int(unixNano())
+
 type supportedType string
 
 // supportedType is a list of argument types that the target function of f.Fuzz can accept.

@@ -15,20 +15,27 @@ import (
 type Ent interface {
 	setDepth(d int)
 	getDepth() int
+	// 추가된 메서드
+	// 타겟팅 후 변형
+	// change()
+	// // 변형 전략 기록
+	// //처음엔 1로 초기화
+	// getWeightedStrategy()*map[int]int
+	// setWeightedStrategy(int)
 }
 
 // ─────────────────────────────
 // 2) 구조체들 & 인터페이스 구현
 // ─────────────────────────────
 
-// alphaEnt
-type alphaEnt struct {
+// letterEnt
+type letterEnt struct {
 	data  string
 	depth int
 }
 
-func (a *alphaEnt) setDepth(d int) { a.depth = d }
-func (a *alphaEnt) getDepth() int  { return a.depth }
+func (a *letterEnt) setDepth(d int) { a.depth = d }
+func (a *letterEnt) getDepth() int  { return a.depth }
 
 // numEnt
 type numEnt struct {
@@ -81,16 +88,29 @@ type groupEnt struct {
 func (g *groupEnt) setDepth(d int) { g.depth = d }
 func (g *groupEnt) getDepth() int  { return g.depth }
 
-// rootEnt: 최상위 (패턴 판단)
-type rootEnt struct {
+// RootEnt: 최상위 (패턴 판단)
+type RootEnt struct {
 	data      []Ent
 	depth     int
 	isPattern bool
 	pattern   string
 }
 
-func (r *rootEnt) setDepth(d int) { r.depth = d }
-func (r *rootEnt) getDepth() int  { return r.depth }
+// //이것들 추가하기
+// // 인터페이스는 문법 오류니까. 여튼 추가.
+// type RootEnt interface {
+// 	//여기서부터 추가된 메서드
+// 	// 한 단계 밑으 *Ent의 가중치 계싼
+// 	fmtWeight() //처음엔 1로 초기회
+// 	setWeight(*Ent, int) //Ent에 따른 가중치
+// 	getWeight() map[*Ent][int]
+// 	//모든 ent를 flatten후 포인터 저장
+// 	getFlattened()[]*Ent
+// 	// 변이 수 할당받아서 그 비율만큼 1개씩 변형된 ENT리턴
+
+// }
+func (r *RootEnt) setDepth(d int) { r.depth = d }
+func (r *RootEnt) getDepth() int  { return r.depth }
 
 // ─────────────────────────────
 // 3) 전역 설정 (mark 목록, bracket)
@@ -223,14 +243,14 @@ func (lx *Lexer) nextToken() Ent {
 	if unicode.IsDigit(ch) || ch == '-' {
 		return lx.lexNumber()
 	}
-	// 4) 알파벳
+	// 4) 유니코드 문자
 	if unicode.IsLetter(ch) {
 		var sb strings.Builder
 		for !lx.eof() && (unicode.IsLetter(lx.peek()) ||
 			unicode.IsDigit(lx.peek()) || lx.peek() == '_') {
 			sb.WriteRune(lx.next())
 		}
-		return &alphaEnt{data: sb.String()}
+		return &letterEnt{data: sb.String()}
 	}
 	// 5) 다중문자 마커
 	sorted := sortMarksByLengthDesc(parserMark)
@@ -467,7 +487,7 @@ func parseKeyVals(tokens []Ent) []Ent {
 
 func isAlphaOrNum(e Ent) bool {
 	switch e.(type) {
-	case *alphaEnt, *numEnt:
+	case *letterEnt, *numEnt:
 		return true
 	}
 	return false
@@ -536,7 +556,7 @@ func parseBracketGroup(tokens []Ent, from int) (*groupEnt, int) {
 // ─────────────────────────────
 // 7) rootEnt + pattern
 // ─────────────────────────────
-func parseToRoot(s string) *rootEnt {
+func parseToRoot(s string) *RootEnt {
 	// 1) Lex
 	lx := NewLexer(s)
 	toks := lx.Lex()
@@ -548,7 +568,7 @@ func parseToRoot(s string) *rootEnt {
 	// 3) bracket
 	toks3 := parseBrackets(toks2)
 	// 4) rootEnt
-	r := &rootEnt{data: toks3, depth: 0}
+	r := &RootEnt{data: toks3, depth: 0}
 	r = applyPatternToRoot(r)
 	finalizeDepth(r, 0)
 	return r
@@ -568,7 +588,7 @@ func detectPattern(tokens []Ent) (string, bool) {
 		switch t := e.(type) {
 		case *wsEnt:
 			continue
-		case *alphaEnt:
+		case *letterEnt:
 			total++
 			low := strings.ToLower(t.data)
 			if low == "return" || low == "func" || low == "for" ||
@@ -584,7 +604,7 @@ func detectPattern(tokens []Ent) (string, bool) {
 			if d == ":=" || d == "=" {
 				gnoCount++
 			}
-			if d == "http://" || d == "https://" {
+			if d == "://" {
 				httpCount++
 			}
 			if d == "<" || d == ">" {
@@ -620,7 +640,7 @@ func detectPattern(tokens []Ent) (string, bool) {
 	if gnoCount > 3 || float64(gnoCount)/float64(total) >= 0.1 {
 		return "GNO", true
 	}
-	if httpCount > 0 {
+	if httpCount > 1 {
 		return "HTTP", true
 	}
 	if (jsonBrace + jsonColon) > 2 {
@@ -632,7 +652,7 @@ func detectPattern(tokens []Ent) (string, bool) {
 	return "SOMETHING", true
 }
 
-func applyPatternToRoot(r *rootEnt) *rootEnt {
+func applyPatternToRoot(r *RootEnt) *RootEnt {
 	p, ok := detectPattern(r.data)
 	if ok {
 		r.isPattern = true
@@ -682,7 +702,7 @@ func finalizeDepth(e Ent, currentDepth int) {
 		for _, c := range kv.data {
 			finalizeDepth(c, currentDepth+1)
 		}
-	case *rootEnt:
+	case *RootEnt:
 		// rootEnt 내부도 children은 currentDepth+1
 		for _, c := range kv.data {
 			finalizeDepth(c, currentDepth+1)
@@ -697,8 +717,8 @@ func finalizeDepth(e Ent, currentDepth int) {
 func printTree(e Ent, indent int) {
 	ind := strings.Repeat("  ", indent)
 	switch t := e.(type) {
-	case *alphaEnt:
-		fmt.Printf("%salphaEnt(%q, depth:%d)\n", ind, t.data, t.depth)
+	case *letterEnt:
+		fmt.Printf("%sletterEnt(%q, depth:%d)\n", ind, t.data, t.depth)
 	case *numEnt:
 		fmt.Printf("%snumEnt(%q, hex:%v, depth:%d)\n", ind, t.data, t.hex, t.depth)
 	case *wsEnt:
@@ -724,7 +744,7 @@ func printTree(e Ent, indent int) {
 			printTree(c, indent+1)
 		}
 		fmt.Printf("%s]\n", ind)
-	case *rootEnt:
+	case *RootEnt:
 		if t.isPattern {
 			fmt.Printf("%srootEnt(depth:%d, pattern:%q)[\n", ind, t.depth, t.pattern)
 		} else {
@@ -747,7 +767,7 @@ func serializeToTokens(e Ent) []Ent {
 	switch t := e.(type) {
 
 	// 1) 기본 토큰 (알파벳, 숫자, 공백, 기호 등)
-	case *alphaEnt, *numEnt, *wsEnt, *markEnt:
+	case *letterEnt, *numEnt, *wsEnt, *markEnt:
 		// 직접적으로 한 개의 요소로 변환
 		return []Ent{e}
 
@@ -791,7 +811,7 @@ func serializeToTokens(e Ent) []Ent {
 		return out
 
 	// 4) rootEnt
-	case *rootEnt:
+	case *RootEnt:
 		// rootEnt 내부 data를 순회
 		var out []Ent
 		for _, c := range t.data {
@@ -809,7 +829,7 @@ func serializeToTokens(e Ent) []Ent {
 // entToString: 토큰 하나를 문자열로 변환 (공백은 그대로, 알파벳/기호도 그대로)
 func entToString(e Ent) string {
 	switch t := e.(type) {
-	case *alphaEnt:
+	case *letterEnt:
 		return t.data
 	case *numEnt:
 		return t.data
@@ -880,7 +900,7 @@ func main() {
 	} else {
 		println("ok!")
 	}
-	pp := "https://www.naver.com/search.naver?query=12"
+	pp := "https://www.naver.com/search.naver?query=김명헌"
 	rootp := parseToRoot(pp)
 	printTree(rootp, 0)
 	ml := `<html><a>yeah!<a/><html/>`
