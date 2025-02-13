@@ -1,10 +1,36 @@
-package testing
+package fuzzing
 
 import (
 	"errors"
 	"fmt"
 	"os"
 	"sort"
+)
+
+type SupportedType string
+
+// supportedType is a list of argument types that the target function of f.Fuzz can accept.
+// In other words, the function passed to f.Fuzz cannot take complex structs as arguments.
+// For example, the target function can receive ([]byte, bool, int32) as args, but not ([][]byte, []int) as a factor.
+// The types are selected based on the supported types of Go's fuzzer (the same as Go's fuzzer).
+const (
+	ByteArray SupportedType = "[]byte"
+	String    SupportedType = "string"
+	Bool      SupportedType = "bool"
+	Byte      SupportedType = "byte"
+	Rune      SupportedType = "rune"
+	Float32   SupportedType = "float32"
+	Float64   SupportedType = "float64"
+	Int       SupportedType = "int"
+	Int8      SupportedType = "int8"
+	Int16     SupportedType = "int16"
+	Int32     SupportedType = "int32"
+	Int64     SupportedType = "int64"
+	Uint      SupportedType = "uint"
+	Uint8     SupportedType = "uint8"
+	Uint16    SupportedType = "uint16"
+	Uint32    SupportedType = "uint32"
+	Uint64    SupportedType = "uint64"
 )
 
 const (
@@ -30,7 +56,7 @@ type FuzzManager struct {
 	InputCount uint
 
 	// SeedType holds the types of seeds.
-	SeedType []supportedType
+	SeedType []SupportedType
 
 	// Inithashnumber contains numbers used to search for "real seeds" added via f.Add.
 	Inithashnumber []HashNumber
@@ -44,20 +70,40 @@ type FuzzManager struct {
 	InspectingHashNumbers uint                        // inspectingHashNumbers is the number of hash numbers currently managed by the manager.
 }
 
+type Seed struct {
+	Pid           uint
+	Id            uint
+	Gen           uint
+	IsCoordinated bool
+	HashNumber    HashNumber
+	Content       []interface{}
+	Result        interface{}
+}
+
+// seedQueue represents a queue of seeds.
+type (
+	// SeedQueue holds a slice of seeds.
+	SeedQueue struct {
+		Data []Seed
+	}
+
+	// seed represents a single seed with its metadata.
+)
+
 // coordinateSeed places a seed into the fuzzManager's internal arrays.
 // The placed seed can be selected as the 'next input'.
 // It assigns priority based on how many similar seeds have been input so far.
 // Seeds with lower priority (i.e., larger priority value) have a reduced probability of being selected next.
-func (fm *FuzzManager) coordinateSeed(seed Seed) EndInfo {
-	if seed.isCoordinated {
-		fm.HashNumber2Seeds[seed.hashNumber].enqueue(seed)
+func (fm *FuzzManager) CoordinateSeed(seed Seed) EndInfo {
+	if seed.IsCoordinated {
+		fm.HashNumber2Seeds[seed.HashNumber].enqueue(seed)
 		return EndInfo{
-			completeTrials: false,
-			maxedCAPACITY:  false,
+			CompleteTrials: false,
+			MaxedCAPACITY:  false,
 		}
 	}
-	hn := seed.hashNumber
-	seed.isCoordinated = true
+	hn := seed.HashNumber
+	seed.IsCoordinated = true
 	fm.InputCount++
 	// Similar to the aging technique used in OS. It takes the hash number of the seed and lowers its priority.
 	// By doing so, sets of values that have been input many times are selected less frequently next time.
@@ -83,13 +129,13 @@ func (fm *FuzzManager) coordinateSeed(seed Seed) EndInfo {
 		fm.Priority2HashNumSet[updatedPriority] = newHashNumberSet()
 	}
 	fm.Priority2HashNumSet[updatedPriority].add(hn)
-	fm.conditionallyLogProgress(1)
-	return fm.checkEndCondition(updatedPriority, hn)
+	fm.ConditionallyLogProgress(1)
+	return fm.CheckEndCondition(updatedPriority, hn)
 }
 
 // conditionallyLogProgress logs the progress of the fuzzing process based on the number of inputs.
 // It prints the progress at certain intervals depending on the verbosity level set via CLI.
-func (fm *FuzzManager) conditionallyLogProgress(progressed uint) {
+func (fm *FuzzManager) ConditionallyLogProgress(progressed uint) {
 	if fm.Verbose {
 		if (fm.InputCount-progressed)%5000 > fm.InputCount%5000 {
 			fmt.Fprintf(os.Stderr, "%d times runned: inspecting %d coverages\n", fm.InputCount, fm.InspectingHashNumbers)
@@ -102,30 +148,30 @@ func (fm *FuzzManager) conditionallyLogProgress(progressed uint) {
 }
 
 type EndInfo struct {
-	completeTrials bool
-	maxedCAPACITY  bool
+	CompleteTrials bool
+	MaxedCAPACITY  bool
 }
 
 // checkEndCondition checks whether the fuzzing process should end based on the number of inputs and capacity of fuzz manager.
 // It checks if 1) the required number of trials has been completed, or
 // 2) the fuzzManager's arrays have reached their maximum capacity.
-func (fm *FuzzManager) checkEndCondition(updatedPriority uint, hn HashNumber) EndInfo {
+func (fm *FuzzManager) CheckEndCondition(updatedPriority uint, hn HashNumber) EndInfo {
 	if fm.InputCount >= fm.Trials {
 		return EndInfo{
-			completeTrials: true,
-			maxedCAPACITY:  false,
+			CompleteTrials: true,
+			MaxedCAPACITY:  false,
 		}
 	} else if uint64(updatedPriority) >= (MaxCapacity-1) || uint64(hn) >= (MaxCapacity-1) {
 		// Case 1: Priority reaches MAX. Priority increases discontinuously
 		// Case 2: HashNumber reaches Max.
 		return EndInfo{
-			completeTrials: false,
-			maxedCAPACITY:  true,
+			CompleteTrials: false,
+			MaxedCAPACITY:  true,
 		}
 	} else {
 		return EndInfo{
-			completeTrials: false,
-			maxedCAPACITY:  false,
+			CompleteTrials: false,
+			MaxedCAPACITY:  false,
 		}
 	}
 }
@@ -135,7 +181,7 @@ func (fm *FuzzManager) checkEndCondition(updatedPriority uint, hn HashNumber) En
 // By placing only abstract values without storing seeds, it eliminates phenomena like delay and stagnation.
 // This function lowers the priority of the hash number based on the number of shared seeds.
 // Thus, hash numbers that appear frequently are selected less often next time.
-func (fm *FuzzManager) coordinateAbstraction(hn HashNumber, abstractNumber uint) EndInfo {
+func (fm *FuzzManager) CoordinateAbstraction(hn HashNumber, abstractNumber uint) EndInfo {
 	fm.InputCount = fm.InputCount + abstractNumber
 	// Abstracts the behavior of coordinateSeed. It is a more generalized operation.
 	// However, it does not handle concrete seeds.
@@ -143,8 +189,8 @@ func (fm *FuzzManager) coordinateAbstraction(hn HashNumber, abstractNumber uint)
 	updatedPriority := oldPriority + abstractNumber
 	fm.HashNumber2Priority[hn] = updatedPriority
 	// checks precondition
-	endInfo := fm.checkEndCondition(updatedPriority, hn)
-	if endInfo.maxedCAPACITY || endInfo.completeTrials {
+	endInfo := fm.CheckEndCondition(updatedPriority, hn)
+	if endInfo.MaxedCAPACITY || endInfo.CompleteTrials {
 		return endInfo
 	}
 
@@ -164,13 +210,13 @@ func (fm *FuzzManager) coordinateAbstraction(hn HashNumber, abstractNumber uint)
 		fm.Priority2HashNumSet[updatedPriority] = newHashNumberSet()
 	}
 	fm.Priority2HashNumSet[updatedPriority].add(hn)
-	fm.conditionallyLogProgress(abstractNumber)
+	fm.ConditionallyLogProgress(abstractNumber)
 	return endInfo
 }
 
 // seeds and hashNumbers are already  sorted by priority within o(1) time automatically by the coordinating function.
 // You can also record what your most recent priorities were in the prioriCache to complete your selection in o(1) hours (average case).
-func (fm *FuzzManager) popSeeds() []Seed {
+func (fm *FuzzManager) PopSeeds() []Seed {
 	var highestProrityHashNumber uint
 	// Finds the hash number with the highest priority, i.e., closest to o~o(k)
 	for {
@@ -197,8 +243,8 @@ func (fm *FuzzManager) popSeeds() []Seed {
 		return []Seed{popedSeed1}
 	}
 	// Checks who the 'parent' of each seed is.
-	pid1 := popedSeed1.pid
-	pid2 := peekedSeed2.pid
+	pid1 := popedSeed1.Pid
+	pid2 := peekedSeed2.Pid
 	if pid1 == pid2 {
 		// Seeds from the same lineage should be popped together for crossover.
 		popedSeed2, _ := fm.HashNumber2Seeds[highestProrityHashNumber].dequeue()
@@ -212,7 +258,7 @@ func (fm *FuzzManager) popSeeds() []Seed {
 
 // popInitSeedByHN retrieves a seed based on its hash number.
 // It is used during the initial formatting process of the fuzzer to obtain "initial seeds" based on their hash numbers.
-func (fm *FuzzManager) popInitSeedByHN(hn HashNumber) Seed {
+func (fm *FuzzManager) PopInitSeedByHN(hn HashNumber) Seed {
 	popedSeed, isOnce := fm.HashNumber2Seeds[hn].dequeue()
 	if !isOnce {
 		panic("logical internal error: it must have more than one seed")
@@ -252,7 +298,7 @@ type seedAndPrioryty struct {
 //     The more compressed, the lower the priority.
 //
 // This compresses the fuzzManager's information into the seed array.
-func (fm *FuzzManager) summarize() []Seed {
+func (fm *FuzzManager) Summarize() []Seed {
 	// Collects all (priority, hashNumber) pairs currently held by the fuzzManager.
 	// Each hashNumber has its corresponding priority.
 	collectedPriorytyAndHN := priorytyHashNumberList{}
@@ -279,7 +325,7 @@ func (fm *FuzzManager) summarize() []Seed {
 	for _, pair := range collectedPriorytyAndHN {
 		hn := pair.hashNumber
 		// Samples the first seed. This is effectively random.
-		seed := fm.HashNumber2Seeds[hn].data[0]
+		seed := fm.HashNumber2Seeds[hn].Data[0]
 		priority := pair.priority
 		sampledSeedAndPrioryty = append(sampledSeedAndPrioryty, seedAndPrioryty{seed, priority})
 	}
@@ -295,10 +341,10 @@ func (fm *FuzzManager) summarize() []Seed {
 		rank := i + 1
 
 		seed := seedAndPriority.seed
-		seed.pid = uint(i)
-		seed.id = uint(i)
-		seed.gen = allocateGen(seedAndPriority.priority, rank, total)
-		seed.isCoordinated = false
+		seed.Pid = uint(i)
+		seed.Id = uint(i)
+		seed.Gen = allocateGen(seedAndPriority.priority, rank, total)
+		seed.IsCoordinated = false
 
 		summarizedSeeds = append(summarizedSeeds, seed)
 	}
@@ -392,53 +438,33 @@ func NewFuzzManager(trials uint, inputCount uint) *FuzzManager {
 	}
 }
 
-// seedQueue represents a queue of seeds.
-type (
-	// SeedQueue holds a slice of seeds.
-	SeedQueue struct {
-		data []Seed
-	}
-
-	// seed represents a single seed with its metadata.
-)
-
-type Seed struct {
-	pid           uint
-	id            uint
-	gen           uint
-	isCoordinated bool
-	hashNumber    HashNumber
-	content       []interface{}
-	result        interface{}
-}
-
 // NewSeedQueue initializes and returns a new seedQueue.
 func NewSeedQueue() *SeedQueue {
 	return &SeedQueue{
-		data: make([]Seed, 0),
+		Data: make([]Seed, 0),
 	}
 }
 
 // enqueue adds a seed to the end of the seedQueue.
 func (q *SeedQueue) enqueue(seed Seed) {
-	q.data = append(q.data, seed)
+	q.Data = append(q.Data, seed)
 }
 
 // dequeue removes and returns the front seed from the seedQueue.
 // It returns a boolean indicating whether the operation was successful.
 func (q *SeedQueue) dequeue() (Seed, bool) {
-	if len(q.data) == 0 {
+	if len(q.Data) == 0 {
 		return Seed{}, false
 	}
 
-	front := q.data[0]
+	front := q.Data[0]
 
-	q.data = q.data[1:]
+	q.Data = q.Data[1:]
 	// Reduce memory usage
-	if len(q.data) > 0 && len(q.data) <= cap(q.data)/2 {
-		newData := make([]Seed, len(q.data))
-		copy(newData, q.data)
-		q.data = newData
+	if len(q.Data) > 0 && len(q.Data) <= cap(q.Data)/2 {
+		newData := make([]Seed, len(q.Data))
+		copy(newData, q.Data)
+		q.Data = newData
 	}
 	return front, true
 }
@@ -446,10 +472,10 @@ func (q *SeedQueue) dequeue() (Seed, bool) {
 // peek returns the front seed of the seedQueue without removing it.
 // It returns an error if the queue is empty.
 func (q *SeedQueue) peek() (Seed, error) {
-	if len(q.data) == 0 {
+	if len(q.Data) == 0 {
 		return Seed{}, errors.New("queue is empty")
 	}
-	return q.data[0], nil
+	return q.Data[0], nil
 }
 
 // hashNumberSet represents a set of hashNumbers.

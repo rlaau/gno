@@ -1,4 +1,4 @@
-package testing
+package fuzzing
 
 import (
 	"bytes"
@@ -11,60 +11,60 @@ import (
 
 // FuzzLogger records and manages failure cases during fuzzing.
 type FuzzLogger struct {
-	data []CrashCase
+	Data []CrashCase
 }
 
 // CrashCase represents a single failure case encountered during fuzzing.
 type CrashCase struct {
-	hashNumber   uint          // The unique hash number associated with the coverage.
-	input        string        // The input string that caused the failure.
-	rawContent   []interface{} // The raw content of the input.
-	inputCount   uint          // The count of inputs processed before this failure.
-	isPanic      bool          // Indicates whether a panic occurred.
-	panicMessage string        // The panic message, if a panic occurred.
-	errorMsg     string        // The error message, if an error occurred.
+	HashNumber   uint          // The unique hash number associated with the coverage.
+	Input        string        // The input string that caused the failure.
+	RawContent   []interface{} // The raw content of the input.
+	InputCount   uint          // The count of inputs processed before this failure.
+	IsPanic      bool          // Indicates whether a panic occurred.
+	PanicMessage string        // The panic message, if a panic occurred.
+	ErrorMsg     string        // The error message, if an error occurred.
 }
 
 // TestResult holds the result of a fuzzing test, indicating if a panic occurred and any associated messages.
 type TestResult struct {
-	panicOccurred bool   // Indicates whether a panic occurred during the test.
-	panicMessage  string // The message associated with the panic.
-	prror         error  // The error encountered, if any.
+	PanicOccurred bool   // Indicates whether a panic occurred during the test.
+	PanicMessage  string // The message associated with the panic.
+	Error         error  // The error encountered, if any.
 }
 
 // addCase adds a new crash case to the fuzzLogger based on the provided seed and testResult.
 // It assigns a unique hash number to the coverage and records the details of the failure.
-func (fl *FuzzLogger) addCase(seed Seed, r TestResult) {
+func (fl *FuzzLogger) AddCase(seed Seed, r TestResult) {
 	var crashcase CrashCase
-	if r.prror == nil {
+	if r.Error == nil {
 		crashcase = CrashCase{
-			hashNumber:   uint(seed.hashNumber),
-			input:        ContentToString(seed.content),
-			rawContent:   seed.content,
-			inputCount:   seed.id,
-			isPanic:      r.panicOccurred,
-			panicMessage: r.panicMessage,
-			errorMsg:     "",
+			HashNumber:   uint(seed.HashNumber),
+			Input:        ContentToString(seed.Content),
+			RawContent:   seed.Content,
+			InputCount:   seed.Id,
+			IsPanic:      r.PanicOccurred,
+			PanicMessage: r.PanicMessage,
+			ErrorMsg:     "",
 		}
 	} else {
 		crashcase = CrashCase{
-			hashNumber:   uint(seed.hashNumber),
-			input:        ContentToString(seed.content),
-			rawContent:   seed.content,
-			inputCount:   seed.id,
-			isPanic:      r.panicOccurred,
-			panicMessage: r.panicMessage,
-			errorMsg:     strings.TrimSpace(r.prror.Error()),
+			HashNumber:   uint(seed.HashNumber),
+			Input:        ContentToString(seed.Content),
+			RawContent:   seed.Content,
+			InputCount:   seed.Id,
+			IsPanic:      r.PanicOccurred,
+			PanicMessage: r.PanicMessage,
+			ErrorMsg:     strings.TrimSpace(r.Error.Error()),
 		}
 	}
-	fl.data = append(fl.data, crashcase)
+	fl.Data = append(fl.Data, crashcase)
 }
 
 // reportLastFailingInput reports the most recent failing input to standard error.
-func (fl *FuzzLogger) reportLastFailingInput() {
-	log := fl.data
+func (fl *FuzzLogger) ReportLastFailingInput() {
+	log := fl.Data
 	lastCrashCase := log[len(log)-1]
-	fmt.Fprintf(os.Stderr, "Found failing input %s at %d trials, coverage %d \n", escapedToString(lastCrashCase.input), lastCrashCase.inputCount, int(lastCrashCase.hashNumber))
+	fmt.Fprintf(os.Stderr, "Found failing input %s at %d trials, coverage %d \n", escapedToString(lastCrashCase.Input), lastCrashCase.InputCount, int(lastCrashCase.HashNumber))
 	return
 }
 
@@ -164,8 +164,8 @@ func ByteToHex(b byte) []byte {
 }
 
 // reportLastCrashCase reports the details of the most recent crash case to standard error.
-func (fl *FuzzLogger) reportLastCrashCase() {
-	log := fl.data
+func (fl *FuzzLogger) ReportLastCrashCase() {
+	log := fl.Data
 	lastCrashCase := log[len(log)-1]
 	fmt.Fprintf(os.Stderr, "%s\n", CrashCaseToString(lastCrashCase))
 	return
@@ -176,16 +176,16 @@ func CrashCaseToString(c CrashCase) string {
 	var sb strings.Builder
 
 	sb.WriteString("Input: ")
-	sb.WriteString(escapedToString(c.input))
-	if c.isPanic {
+	sb.WriteString(escapedToString(c.Input))
+	if c.IsPanic {
 		sb.WriteString("\nPanic/Error: Panic")
 		sb.WriteString("\nPanicMessage: \"")
-		sb.WriteString(c.panicMessage)
+		sb.WriteString(c.PanicMessage)
 		sb.WriteString("\"")
 	} else {
 		sb.WriteString("\nPanic/Error: Error")
 		sb.WriteString("\nErrorMessage: ")
-		sb.WriteString("\"" + c.errorMsg + "\"")
+		sb.WriteString("\"" + c.ErrorMsg + "\"")
 	}
 
 	return sb.String()
@@ -246,8 +246,8 @@ func ContentToString(content []interface{}) string {
 }
 
 // getLastCrashCase retrieves the most recent crash case from the fuzzLogger.
-func (fl *FuzzLogger) getLastCrashCase() CrashCase {
-	log := fl.data
+func (fl *FuzzLogger) GetLastCrashCase() CrashCase {
+	log := fl.Data
 	lastCrashCase := log[len(log)-1]
 	return lastCrashCase
 }
@@ -255,6 +255,6 @@ func (fl *FuzzLogger) getLastCrashCase() CrashCase {
 // NewFuzzLogger creates and initializes a new instance of fuzzLogger.
 func NewFuzzLogger() *FuzzLogger {
 	return &FuzzLogger{
-		data: make([]CrashCase, 0),
+		Data: make([]CrashCase, 0),
 	}
 }

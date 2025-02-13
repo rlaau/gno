@@ -1,4 +1,4 @@
-package testing
+package fuzzing
 
 import (
 	"bytes"
@@ -14,17 +14,17 @@ import (
 // seeds: parent seeds.
 // seedCount: A pointer to f.seedCount, used to measure the number of inputs during the fuzzing process.
 // stringByteCandidates: A slice of indexes“ indicating which arguments in seed.Content are of type string or []byte, which need to be specially handled during insertDelete.
-func (f *F) evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []Seed {
+func Evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []Seed {
 	p1 := seeds[0]
 	// Set the mutation strength.
 	// The lower the seed.Gen, the stronger the mutation, meaning more transformation attempts.
 	MutationStrength := [10]int{5, 4, 3, 3, 2, 2, 2, 2, 2, 2}
 	var mutationStrength int
-	if int(p1.gen) > len(MutationStrength) {
+	if int(p1.Gen) > len(MutationStrength) {
 		// The minimum number of transformations is 1
 		mutationStrength = 1
 	} else {
-		mutationStrength = MutationStrength[p1.gen-1]
+		mutationStrength = MutationStrength[p1.Gen-1]
 	}
 	// Set the number of children to create.
 	// The lower the seed.Gen, the higher the number, meaning more children are generated.
@@ -34,10 +34,10 @@ func (f *F) evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []
 	// but it will likely increase the time needed to identify failing inputs.
 	CreatingCount := [10]int{1440, 1280, 960, 480, 320, 280, 270, 260, 250, 240}
 	var creatingCount int
-	if int(p1.gen) > len(CreatingCount) {
+	if int(p1.Gen) > len(CreatingCount) {
 		creatingCount = 240
 	} else {
-		creatingCount = CreatingCount[p1.gen-1]
+		creatingCount = CreatingCount[p1.Gen-1]
 	}
 
 	loopCount := creatingCount / 2
@@ -47,19 +47,19 @@ func (f *F) evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []
 	// Case when there is only one parent seed
 	if len(seeds) == 1 {
 		for i := 0; i < int(creatingCount); i++ {
-			newContent := make([]interface{}, len(seeds[0].content))
+			newContent := make([]interface{}, len(seeds[0].Content))
 			// Perform immediate transformation without twoPointCrossover.
-			for i, v := range seeds[0].content {
+			for i, v := range seeds[0].Content {
 				newContent[i] = v
 			}
 			*seedCount++
 			newInd := Seed{
-				gen:           seeds[0].gen + 1,
-				isCoordinated: false,
-				content:       newContent,
-				result:        nil,
-				pid:           seeds[0].id,
-				id:            *seedCount,
+				Gen:           seeds[0].Gen + 1,
+				IsCoordinated: false,
+				Content:       newContent,
+				Result:        nil,
+				Pid:           seeds[0].Id,
+				Id:            *seedCount,
 			}
 
 			// Maintain the ratio and strength of mutate and insertDelete.
@@ -80,7 +80,7 @@ func (f *F) evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []
 				newInd = insertDelete(newInd, mutationStrength, stringByteCandidates)
 			}
 
-			newInd.gen = seeds[0].gen + 1
+			newInd.Gen = seeds[0].Gen + 1
 			newGeneration = append(newGeneration, newInd)
 
 		}
@@ -130,30 +130,30 @@ func (f *F) evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []
 // mutate modifies the seed.content by the given mutationStrength and returns the mutated seed.
 func mutate(seed Seed, mutationStrength int) Seed {
 	var index int
-	if len(seed.content) > 1 {
-		index = int(RandRange(0, int64(len(seed.content))))
+	if len(seed.Content) > 1 {
+		index = int(RandRange(0, int64(len(seed.Content))))
 	} else {
 		index = 0
 	}
 
-	selected := seed.content[index]
+	selected := seed.Content[index]
 
 	// Use randomXXXFrom functions to gradually modify the given value.
 	switch v := selected.(type) {
 	case int, int8, int16, int32, int64:
 		for i := 0; i < mutationStrength; i++ {
-			seed.content[index] = randomIntFrom(v)
+			seed.Content[index] = randomIntFrom(v)
 		}
 	case uint, uint8, uint16, uint32, uint64:
 		for i := 0; i < mutationStrength; i++ {
-			seed.content[index] = randomUintFrom(v)
+			seed.Content[index] = randomUintFrom(v)
 		}
 	case float32, float64:
 		for i := 0; i < mutationStrength; i++ {
-			seed.content[index] = randomFloatFrom(v)
+			seed.Content[index] = randomFloatFrom(v)
 		}
 	case bool:
-		seed.content[index] = randomBool()
+		seed.Content[index] = randomBool()
 	// String is treated as []byte rather than []rune
 	// []rune is not allowed to contain escaped bytes, but string can contain them.
 	// https://go.dev/blog/strings
@@ -170,7 +170,7 @@ func mutate(seed Seed, mutationStrength int) Seed {
 		}
 
 		var newStr string = RebuildString(tokens)
-		seed.content[index] = newStr
+		seed.Content[index] = newStr
 
 		// bytes := []byte(v)
 		// if len(bytes) > 0 {
@@ -193,7 +193,7 @@ func mutate(seed Seed, mutationStrength int) Seed {
 		}
 
 		var newBytes []byte = RebuildBytes(tokens)
-		seed.content[index] = newBytes
+		seed.Content[index] = newBytes
 	default:
 		panic("not supported type")
 	}
@@ -332,7 +332,7 @@ func insertDelete(seed Seed, mutationStrength int, stringByteCandidates []int) S
 		index = stringByteCandidates[selectedFieldIdx]
 	}
 
-	selected := seed.content[index]
+	selected := seed.Content[index]
 
 	switch v := selected.(type) {
 	case []byte:
@@ -343,7 +343,7 @@ func insertDelete(seed Seed, mutationStrength int, stringByteCandidates []int) S
 		tokens = insertDeleteTokens(tokens, mutationStrength)
 		// 3) 토큰들을 다시 []byte로 복원
 		newBytes := RebuildBytes(tokens)
-		seed.content[index] = newBytes
+		seed.Content[index] = newBytes
 	case string:
 		// 1) 문자열을 토큰화
 		tokens := TokenizeXXX(v)
@@ -351,7 +351,7 @@ func insertDelete(seed Seed, mutationStrength int, stringByteCandidates []int) S
 		tokens = insertDeleteTokens(tokens, mutationStrength)
 		// 3) 토큰들을 다시 문자열로 복원
 		newStr := RebuildString(tokens)
-		seed.content[index] = newStr
+		seed.Content[index] = newStr
 	default:
 		panic("internal logic error")
 	}
@@ -420,16 +420,16 @@ func randomToken() Token {
 
 // twoPointCrossover performs two-point crossover on seed.content and returns two new seeds.
 func twoPointCrossover(parent1, parent2 Seed, seedCount *uint) (Seed, Seed) {
-	content1 := make([]interface{}, len(parent1.content))
-	for i, v := range parent1.content {
+	content1 := make([]interface{}, len(parent1.Content))
+	for i, v := range parent1.Content {
 		content1[i] = v
 	}
-	content2 := make([]interface{}, len(parent2.content))
-	for i, v := range parent2.content {
+	content2 := make([]interface{}, len(parent2.Content))
+	for i, v := range parent2.Content {
 		content2[i] = v
 	}
 
-	for i := 0; i < len(parent1.content); i++ {
+	for i := 0; i < len(parent1.Content); i++ {
 		switch v1 := content1[i].(type) {
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 			content1[i], content2[i] = factorizationCrossover(v1, content2[i])
@@ -439,7 +439,7 @@ func twoPointCrossover(parent1, parent2 Seed, seedCount *uint) (Seed, Seed) {
 
 		case []byte:
 			byt1 := v1
-			byt2, ok := parent2.content[i].([]byte)
+			byt2, ok := parent2.Content[i].([]byte)
 			if !ok {
 				panic("type not equal")
 			}
@@ -450,7 +450,7 @@ func twoPointCrossover(parent1, parent2 Seed, seedCount *uint) (Seed, Seed) {
 			content2[i] = resultByt2
 		case string:
 			byt1 := v1
-			byt2, ok := parent2.content[i].(string)
+			byt2, ok := parent2.Content[i].(string)
 			if !ok {
 				panic("type not equal")
 			}
@@ -469,21 +469,21 @@ func twoPointCrossover(parent1, parent2 Seed, seedCount *uint) (Seed, Seed) {
 
 	*seedCount++
 	updatedIdv1 := Seed{
-		gen:           parent1.gen + 1,
-		isCoordinated: false,
-		content:       content1,
-		result:        nil,
-		pid:           parent1.id,
-		id:            *seedCount,
+		Gen:           parent1.Gen + 1,
+		IsCoordinated: false,
+		Content:       content1,
+		Result:        nil,
+		Pid:           parent1.Id,
+		Id:            *seedCount,
 	}
 	*seedCount++
 	updatedIdv2 := Seed{
-		gen:           parent2.gen + 1,
-		isCoordinated: false,
-		content:       content2,
-		result:        nil,
-		pid:           parent1.id,
-		id:            *seedCount,
+		Gen:           parent2.Gen + 1,
+		IsCoordinated: false,
+		Content:       content2,
+		Result:        nil,
+		Pid:           parent1.Id,
+		Id:            *seedCount,
 	}
 
 	return updatedIdv1, updatedIdv2

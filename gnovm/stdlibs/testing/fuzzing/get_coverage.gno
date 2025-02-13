@@ -1,4 +1,4 @@
-package testing
+package fuzzing
 
 import (
 	"unicode/utf8"
@@ -17,12 +17,12 @@ func Reverse(s string) string {
 	return string(r)
 }
 
-// getCoverageOfReverse records coverage information for the Reverse function.
-func getCoverageOfReverse(c *Coverage, s string) string {
+// GetCoverageOfReverse records coverage information for the Reverse function.
+func GetCoverageOfReverse(c *Coverage, s string) string {
 	r := []rune(s)
-	*c = append(*c, CoveredLine{coName: "Reverse", coLine: 37})
+	*c = append(*c, CoveredLine{CoName: "Reverse", CoLine: 37})
 	for i, j := 0, len(r)-1; i < len(r)/2; i, j = i+1, j-1 {
-		*c = append(*c, CoveredLine{coName: "Reverse", coLine: 39})
+		*c = append(*c, CoveredLine{CoName: "Reverse", CoLine: 39})
 		r[i], r[j] = r[j], r[i]
 	}
 	return string(r)
@@ -39,8 +39,8 @@ func byteToHexChar(b byte) string {
 
 // TODO: This is a pseudo-coverage function. Must replace with a real coverage function in the future.
 
-// getCoverageOfrunner is a pseudo-coverage function. It must be replaced with a real coverage function in the future.
-func getCoverageOfrunner(t *T, content []interface{}) Coverage {
+// GetCoverageOfrunner is a pseudo-coverage function. It must be replaced with a real coverage function in the future.
+func GetCoverageOfrunner(content []interface{}) Coverage {
 	// TODO: Ensure to get coverage.
 	// TODO: The format is (function name, line)
 	if len(content) == 1 {
@@ -49,17 +49,17 @@ func getCoverageOfrunner(t *T, content []interface{}) Coverage {
 		if !ok {
 			panic("not a string")
 		}
-		coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 1})
+		coverage = append(coverage, CoveredLine{CoName: "symbolicPath", CoLine: 1})
 		if len(s) > 0 && s[0] == 'b' {
-			coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 2})
+			coverage = append(coverage, CoveredLine{CoName: "symbolicPath", CoLine: 2})
 			if len(s) > 1 && s[1] == 'a' {
-				coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 3})
+				coverage = append(coverage, CoveredLine{CoName: "symbolicPath", CoLine: 3})
 
 				if len(s) > 2 && s[2] == 'd' {
-					coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 4})
+					coverage = append(coverage, CoveredLine{CoName: "symbolicPath", CoLine: 4})
 
 					if len(s) > 3 && s[3] == '!' {
-						coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 5})
+						coverage = append(coverage, CoveredLine{CoName: "symbolicPath", CoLine: 5})
 					}
 				}
 			}
@@ -69,7 +69,7 @@ func getCoverageOfrunner(t *T, content []interface{}) Coverage {
 	}
 
 	coverage := Coverage{}
-	coverage = append(coverage, CoveredLine{coName: "closure", coLine: 13})
+	coverage = append(coverage, CoveredLine{CoName: "closure", CoLine: 13})
 	v, ok := content[0].(string)
 	if !ok {
 		panic("did not implement other type")
@@ -79,17 +79,17 @@ func getCoverageOfrunner(t *T, content []interface{}) Coverage {
 	if !ok2 {
 		panic("did not implement other type")
 	}
-	s1 := getCoverageOfReverse(&coverage, orig)
-	s2 := getCoverageOfReverse(&coverage, s1)
+	s1 := GetCoverageOfReverse(&coverage, orig)
+	s2 := GetCoverageOfReverse(&coverage, s1)
 
 	if orig != s2 && u > 300 && u < 1000 {
 
-		coverage = append(coverage, CoveredLine{coName: "closure", coLine: 21})
+		coverage = append(coverage, CoveredLine{CoName: "closure", CoLine: 21})
 		return coverage
 	}
 
 	if utf8.ValidString(orig) && !utf8.ValidString(s1) && u > 300 && u < 1000 {
-		coverage = append(coverage, CoveredLine{coName: "closure", coLine: 24})
+		coverage = append(coverage, CoveredLine{CoName: "closure", CoLine: 24})
 		return coverage
 	}
 	return coverage

@@ -2,6 +2,7 @@ package testing_test
 
 import (
 	"testing"
+	"testing/fuzzing"
 	"unicode/utf8"
 )
 
@@ -53,8 +54,8 @@ func FuzzEdgeCase(f *testing.F) {
 		if !ok2 {
 			panic("dont match")
 		}
-		rev := testing.Reverse(v)
-		doubleRev := testing.Reverse(rev)
+		rev := fuzzing.Reverse(v)
+		doubleRev := fuzzing.Reverse(rev)
 		if v != doubleRev && i > 300 && i < 500 {
 			t.Errorf("Before: %q, after: %q", orig, doubleRev)
 		}

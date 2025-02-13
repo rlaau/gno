@@ -1,13 +1,13 @@
 package mutating
 
-import "testing"
+import "testing/fuzzing"
 
 type Mutator struct {
-	data map[testing.HashNumber]MutSampleSet // key: hashNumber, value: mutSampleSet
+	data map[fuzzing.HashNumber]MutSampleSet // key: hashNumber, value: mutSampleSet
 }
 
 type MutSample struct {
-	seed     testing.Seed
+	seed     fuzzing.Seed
 	rootEnts []RootEnt
 }
 

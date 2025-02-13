@@ -179,9 +179,9 @@ func GetPCG() *PCG {
 //    GenerateRandomBool, UniformRandomBool
 // -----------------------------------------------------------------------------
 
-// nrand returns a value approximating a normal distribution scaled to roughly [-1,1].
+// Nrand returns a value approximating a normal distribution scaled to roughly [-1,1].
 // (Box–Muller 변환 결과를 3으로 나누어 스케일 조정)
-func nrand() float64 {
+func Nrand() float64 {
 	pcg := GetPCG()
 	val := pcg.NormFloat64()
 	scaled := val / 3
@@ -241,7 +241,7 @@ func GenerateRandomBool(bias float64) bool {
 	if bias < 0 || bias > 1 {
 		panic("bias should be in the range [0,1]")
 	}
-	res := (nrand() + 1) / 2
+	res := (Nrand() + 1) / 2
 	return res > bias
 }
 

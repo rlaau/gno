@@ -764,7 +764,7 @@ func parseBracketGroup(tokens []Ent, from int) (*GroupEnt, int) {
 // ─────────────────────────────
 // 7) rootEnt + pattern
 // ─────────────────────────────
-func parseToRoot(b []byte) *RootEnt {
+func ParseToRoot(b []byte) *RootEnt {
 	// 1) Lex
 	lx := NewLexer([]byte(b))
 	toks := lx.Lex()
@@ -1016,7 +1016,7 @@ func finalizeScore(e Ent) {
 // ─────────────────────────────
 // 8) 출력
 // ─────────────────────────────
-func printTree(e Ent, indent int) {
+func PrintTree(e Ent, indent int) {
 	ind := strings.Repeat("  ", indent)
 	idInfo := ""
 
@@ -1035,20 +1035,20 @@ func printTree(e Ent, indent int) {
 	case *KeyValEnt:
 		fmt.Printf("%skeyValEnt(depth:%d, %s)[\n", ind, t.Depth, idInfo)
 		fmt.Printf("%s  k:\n", ind)
-		printTree(t.K, indent+2)
+		PrintTree(t.K, indent+2)
 		fmt.Printf("%s  pl:\n", ind)
-		printTree(t.PlOrNil, indent+2)
+		PrintTree(t.PlOrNil, indent+2)
 		fmt.Printf("%s  delimiter:\n", ind)
-		printTree(t.Delimiter, indent+2)
+		PrintTree(t.Delimiter, indent+2)
 		fmt.Printf("%s  pr:\n", ind)
-		printTree(t.PrOrNil, indent+2)
+		PrintTree(t.PrOrNil, indent+2)
 		fmt.Printf("%s  v:\n", ind)
-		printTree(t.V, indent+2)
+		PrintTree(t.V, indent+2)
 		fmt.Printf("%s]\n", ind)
 	case *GroupEnt:
 		fmt.Printf("%sgroupEnt(depth:%d, %s)[\n", ind, t.Depth, idInfo)
 		for _, c := range t.Data {
-			printTree(c, indent+1)
+			PrintTree(c, indent+1)
 		}
 		fmt.Printf("%s]\n", ind)
 	case *RootEnt:
@@ -1058,7 +1058,7 @@ func printTree(e Ent, indent int) {
 			fmt.Printf("%srootEnt(depth:%d, %s)[\n", ind, t.Depth, idInfo)
 		}
 		for _, c := range t.Data {
-			printTree(c, indent+1)
+			PrintTree(c, indent+1)
 		}
 		fmt.Printf("%s]\n", ind)
 	case nil:
@@ -1070,7 +1070,7 @@ func printTree(e Ent, indent int) {
 
 // serializeToTokens는 AST 노드를 DFS 식으로 순회하여,
 // 최종적으로 단순 토큰(기본 Ent: alphaEnt, numEnt, wsEnt, markEnt 등) 목록을 반환합니다.
-func serializeToTokens(e Ent) []Ent {
+func SerializeToTokens(e Ent) []Ent {
 	switch t := e.(type) {
 
 	// 1) 기본 토큰 (알파벳, 숫자, 공백, 기호 등)
@@ -1082,19 +1082,19 @@ func serializeToTokens(e Ent) []Ent {
 	case *KeyValEnt:
 		var out []Ent
 		// k
-		out = append(out, serializeToTokens(t.K)...)
+		out = append(out, SerializeToTokens(t.K)...)
 		// plOrNil (왼쪽 공백)
 		if t.PlOrNil != nil {
-			out = append(out, serializeToTokens(t.PlOrNil)...)
+			out = append(out, SerializeToTokens(t.PlOrNil)...)
 		}
 		// delimiter
-		out = append(out, serializeToTokens(t.Delimiter)...)
+		out = append(out, SerializeToTokens(t.Delimiter)...)
 		// prOrNil (오른쪽 공백)
 		if t.PrOrNil != nil {
-			out = append(out, serializeToTokens(t.PrOrNil)...)
+			out = append(out, SerializeToTokens(t.PrOrNil)...)
 		}
 		// v
-		out = append(out, serializeToTokens(t.V)...)
+		out = append(out, SerializeToTokens(t.V)...)
 		return out
 
 	// 3) groupEnt (첫 자식: 여는 괄호, 마지막 자식: 닫는 괄호, 중간: 내부)
@@ -1105,14 +1105,14 @@ func serializeToTokens(e Ent) []Ent {
 		var out []Ent
 		if len(t.Data) > 0 {
 			// 여는 bracket
-			out = append(out, serializeToTokens(t.Data[0])...)
+			out = append(out, SerializeToTokens(t.Data[0])...)
 			// 내부
 			for i := 1; i < len(t.Data)-1; i++ {
-				out = append(out, serializeToTokens(t.Data[i])...)
+				out = append(out, SerializeToTokens(t.Data[i])...)
 			}
 			// 닫는 bracket
 			if len(t.Data) > 1 {
-				out = append(out, serializeToTokens(t.Data[len(t.Data)-1])...)
+				out = append(out, SerializeToTokens(t.Data[len(t.Data)-1])...)
 			}
 		}
 		return out
@@ -1122,7 +1122,7 @@ func serializeToTokens(e Ent) []Ent {
 		// rootEnt 내부 data를 순회
 		var out []Ent
 		for _, c := range t.Data {
-			out = append(out, serializeToTokens(c)...)
+			out = append(out, SerializeToTokens(c)...)
 		}
 		return out
 	case nil:
@@ -1154,8 +1154,8 @@ func entToString(e Ent) string {
 
 // serializeToString는 AST 노드를 토큰으로 펼친 뒤,
 // 각 토큰을 문자열로 변환하여 이어 붙여, 최종 문자열을 반환합니다.
-func serializeToString(e Ent) string {
-	tokens := serializeToTokens(e)
+func SerializeToString(e Ent) string {
+	tokens := SerializeToTokens(e)
 	var sb strings.Builder
 	for _, tok := range tokens {
 		sb.WriteString(entToString(tok))
@@ -1163,7 +1163,7 @@ func serializeToString(e Ent) string {
 	return sb.String()
 }
 
-func safeUTF8(s string) string {
+func SafeUTF8(s string) string {
 	if utf8.ValidString(s) {
 		return s // 이미 안전한 UTF-8이면 그대로 반환
 	}
@@ -1194,9 +1194,9 @@ func main() {
 		printTokens([]Ent{root}, 0)
 		}`
 
-	root := parseToRoot([]byte(safeUTF8(program)))
-	printTree(root, 0)
-	myAst := parseToRoot([]byte(program))
+	root := ParseToRoot([]byte(SafeUTF8(program)))
+	PrintTree(root, 0)
+	myAst := ParseToRoot([]byte(program))
 
 	println("Root has", len(myAst.Id2Ent), "nodes total.")
 
@@ -1205,11 +1205,11 @@ func main() {
 		fmt.Println("ID=16 is Ent:", ent.String())
 	}
 	pp := "https://www.naver.com/search.naver?query=\xeb"
-	rootp := parseToRoot([]byte(pp))
-	printTree(rootp, 0)
+	rootp := ParseToRoot([]byte(pp))
+	PrintTree(rootp, 0)
 	ml := `<html><a>yeah!<a/><html/>`
-	rootm := parseToRoot([]byte(ml))
-	printTree(rootm, 0)
+	rootm := ParseToRoot([]byte(ml))
+	PrintTree(rootm, 0)
 }
 
 // 퍼져가 찾은 에러 코드임. "1E"에 대해선 에러 나옴을 찾음

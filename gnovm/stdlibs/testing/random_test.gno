@@ -2,12 +2,13 @@ package testing
 
 import (
 	"math"
+	"testing/fuzzing"
 )
 
 func Test_nrand(t *T) {
 	sum := 0.0
 	for i := 0; i < 1000; i++ {
-		result := nrand()
+		result := fuzzing.Nrand()
 		sum += result
 	}
 	avg := sum / float64(1000)
@@ -27,7 +28,7 @@ func Test_GenerateRandomBool(t *T) {
 		sampleSize := 1000
 
 		for i := 0; i < sampleSize; i++ {
-			result := GenerateRandomBool(bias)
+			result := fuzzing.GenerateRandomBool(bias)
 			if result {
 				trueCount++
 			} else {
@@ -44,7 +45,7 @@ func Test_GenerateRandomBool(t *T) {
 func TestRandRange(t *T) {
 	nums := make(map[uint64]int)
 	for i := 0; i < 1000; i++ {
-		res := RandRange(0, 10)
+		res := fuzzing.RandRange(0, 10)
 		if res < 0 || res > 10 {
 			t.Errorf("gerandRangenerateRange() = %v, want in range [0, 9]", res)
 		}
