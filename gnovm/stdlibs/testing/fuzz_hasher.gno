@@ -9,53 +9,53 @@ type (
 	// internalHash represents a value that primarily changes coverage based on hashing.
 	internalHash uint64
 
-	// hashNumber represents the final value that coverage changes to
+	// HashNumber represents the final value that coverage changes to
 	// (based on the unique value from hashNumberCounter).
-	hashNumber uint64
+	HashNumber uint64
 
 	// hashNumberCounter is a counter used to assign unique hashNumbers.
 	hashNumberCounter struct {
-		counter hashNumber
+		counter HashNumber
 	}
 )
 
 type (
 	// Coverage: array of coveredLine
-	Coverage []coveredLine
+	Coverage []CoveredLine
 
-	// coveredLine: single covered line
-	coveredLine struct {
+	// CoveredLine: single covered line
+	CoveredLine struct {
 		coName string
 		coLine int
 	}
 )
 
 // ----------------------------------------
-// fuzzHasher: main struct
+// FuzzHasher: main struct
 // ----------------------------------------
-type fuzzHasher struct {
-	hashNumber2Internal     *[MaxCapacity]internalHash  // Table: hashNumber -> internalHash
+type FuzzHasher struct {
+	HashNumber2Internal     *[MaxCapacity]internalHash  // Table: hashNumber -> internalHash
 	internal2Cov            map[internalHash]Coverage   // Table: internalHash -> Coverage
-	internalHash2hashNumber map[internalHash]hashNumber // Table: internalHash -> hashNumber
+	internalHash2hashNumber map[internalHash]HashNumber // Table: internalHash -> hashNumber
 	hashNumberCounter       *hashNumberCounter          // Counter for unique hashNumbers
 
 	// coverageCache map[string]hashNumber  // coverage -> hashNumber
 }
 
-// newHashNumberCounter creates a new hashNumberCounter with given initial counter value.
-func newHashNumberCounter(counter hashNumber) *hashNumberCounter {
+// NewHashNumberCounter creates a new hashNumberCounter with given initial counter value.
+func NewHashNumberCounter(counter HashNumber) *hashNumberCounter {
 	return &hashNumberCounter{
 		counter: counter,
 	}
 }
 
-// newFuzzHasher creates and initializes a new fuzzHasher instance.
-func newFuzzHasher() *fuzzHasher {
-	return &fuzzHasher{
-		hashNumber2Internal:     &[MaxCapacity]internalHash{},
+// NewFuzzHasher creates and initializes a new fuzzHasher instance.
+func NewFuzzHasher() *FuzzHasher {
+	return &FuzzHasher{
+		HashNumber2Internal:     &[MaxCapacity]internalHash{},
 		internal2Cov:            make(map[internalHash]Coverage),
-		internalHash2hashNumber: make(map[internalHash]hashNumber),
-		hashNumberCounter:       newHashNumberCounter(0),
+		internalHash2hashNumber: make(map[internalHash]HashNumber),
+		hashNumberCounter:       NewHashNumberCounter(0),
 	}
 }
 
@@ -67,19 +67,19 @@ func newFuzzHasher() *fuzzHasher {
 // 3) obtains hashNumber (unique ID)
 // 4) updates hashNumber2Internal
 // 5) returns the assigned hashNumber
-func (fh *fuzzHasher) registerCoverage2HashNumber(coverage Coverage) hashNumber {
+func (fh *FuzzHasher) registerCoverage2HashNumber(coverage Coverage) HashNumber {
 	ih := getInternalHash(coverage) // compute internalHash
 	fh.internal2Cov[ih] = coverage
 
 	hn := fh.countHashNumber(ih)
-	fh.hashNumber2Internal[hn] = ih
+	fh.HashNumber2Internal[hn] = ih
 	return hn
 }
 
 // countHashNumber assigns a unique hashNumber to the given internalHash.
 // If it exists, returns existing; otherwise create new.
 // starting point is 0
-func (fh *fuzzHasher) countHashNumber(ih internalHash) hashNumber {
+func (fh *FuzzHasher) countHashNumber(ih internalHash) HashNumber {
 	if val, exists := fh.internalHash2hashNumber[ih]; exists {
 		// if already known, return
 		return val
@@ -91,8 +91,8 @@ func (fh *fuzzHasher) countHashNumber(ih internalHash) hashNumber {
 }
 
 // hashNumber2Coverage: given a hashNumber -> retrieve Coverage
-func (fh *fuzzHasher) hashNumber2Coverage(hn uint) Coverage {
-	ih := fh.hashNumber2Internal[hn]
+func (fh *FuzzHasher) hashNumber2Coverage(hn uint) Coverage {
+	ih := fh.HashNumber2Internal[hn]
 	return fh.internal2Cov[ih]
 }
 

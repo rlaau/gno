@@ -2,7 +2,6 @@ package testing
 
 import (
 	"bytes"
-	"fmt"
 	"math"
 	"time"
 	"unicode/utf8"
@@ -15,7 +14,7 @@ import (
 // seeds: parent seeds.
 // seedCount: A pointer to f.seedCount, used to measure the number of inputs during the fuzzing process.
 // stringByteCandidates: A slice of indexes“ indicating which arguments in seed.Content are of type string or []byte, which need to be specially handled during insertDelete.
-func (f *F) evolve(seeds []seed, seedCount *uint, stringByteCandidates []int) []seed {
+func (f *F) evolve(seeds []Seed, seedCount *uint, stringByteCandidates []int) []Seed {
 	p1 := seeds[0]
 	// Set the mutation strength.
 	// The lower the seed.Gen, the stronger the mutation, meaning more transformation attempts.
@@ -43,7 +42,7 @@ func (f *F) evolve(seeds []seed, seedCount *uint, stringByteCandidates []int) []
 
 	loopCount := creatingCount / 2
 
-	newGeneration := []seed{}
+	newGeneration := []Seed{}
 
 	// Case when there is only one parent seed
 	if len(seeds) == 1 {
@@ -54,7 +53,7 @@ func (f *F) evolve(seeds []seed, seedCount *uint, stringByteCandidates []int) []
 				newContent[i] = v
 			}
 			*seedCount++
-			newInd := seed{
+			newInd := Seed{
 				gen:           seeds[0].gen + 1,
 				isCoordinated: false,
 				content:       newContent,
@@ -129,7 +128,7 @@ func (f *F) evolve(seeds []seed, seedCount *uint, stringByteCandidates []int) []
 }
 
 // mutate modifies the seed.content by the given mutationStrength and returns the mutated seed.
-func mutate(seed seed, mutationStrength int) seed {
+func mutate(seed Seed, mutationStrength int) Seed {
 	var index int
 	if len(seed.content) > 1 {
 		index = int(RandRange(0, int64(len(seed.content))))
@@ -162,7 +161,7 @@ func mutate(seed seed, mutationStrength int) seed {
 	// This describes the logic that handles strings as bytes.
 	case string:
 
-		tokens := tokenizeXXX(v)
+		tokens := TokenizeXXX(v)
 		if len(tokens) > 0 {
 			for i := 0; i < mutationStrength; i++ {
 				tokenIndex := RandRange(0, int64(len(tokens)))
@@ -170,7 +169,7 @@ func mutate(seed seed, mutationStrength int) seed {
 			}
 		}
 
-		var newStr string = rebuildString(tokens)
+		var newStr string = RebuildString(tokens)
 		seed.content[index] = newStr
 
 		// bytes := []byte(v)
@@ -185,7 +184,7 @@ func mutate(seed seed, mutationStrength int) seed {
 
 	case []byte:
 
-		tokens := tokenizeXXX(v)
+		tokens := TokenizeXXX(v)
 		if len(tokens) > 0 {
 			for i := 0; i < mutationStrength; i++ {
 				tokenIndex := RandRange(0, int64(len(tokens)))
@@ -193,7 +192,7 @@ func mutate(seed seed, mutationStrength int) seed {
 			}
 		}
 
-		var newBytes []byte = rebuildBytes(tokens)
+		var newBytes []byte = RebuildBytes(tokens)
 		seed.content[index] = newBytes
 	default:
 		panic("not supported type")
@@ -322,7 +321,7 @@ func inspectTokenData(data []byte) int {
 }
 
 // insertDelete performs insertions and deletions on string and []byte fields in seed.content by the given mutationStrength and returns the modified seed.
-func insertDelete(seed seed, mutationStrength int, stringByteCandidates []int) seed {
+func insertDelete(seed Seed, mutationStrength int, stringByteCandidates []int) Seed {
 	if len(stringByteCandidates) == 0 {
 		return seed
 	}
@@ -339,19 +338,19 @@ func insertDelete(seed seed, mutationStrength int, stringByteCandidates []int) s
 	case []byte:
 
 		// 1) []byte를 토큰화
-		tokens := tokenizeXXX(v)
+		tokens := TokenizeXXX(v)
 		// 2) 토큰 단위로 insert/delete
 		tokens = insertDeleteTokens(tokens, mutationStrength)
 		// 3) 토큰들을 다시 []byte로 복원
-		newBytes := rebuildBytes(tokens)
+		newBytes := RebuildBytes(tokens)
 		seed.content[index] = newBytes
 	case string:
 		// 1) 문자열을 토큰화
-		tokens := tokenizeXXX(v)
+		tokens := TokenizeXXX(v)
 		// 2) 토큰 단위로 insert/delete
 		tokens = insertDeleteTokens(tokens, mutationStrength)
 		// 3) 토큰들을 다시 문자열로 복원
-		newStr := rebuildString(tokens)
+		newStr := RebuildString(tokens)
 		seed.content[index] = newStr
 	default:
 		panic("internal logic error")
@@ -361,7 +360,7 @@ func insertDelete(seed seed, mutationStrength int, stringByteCandidates []int) s
 
 // insertDeleteTokens는 주어진 tokens 슬라이스에 대해
 // mutationStrength 횟수만큼 랜덤 삽입 또는 삭제를 수행합니다.
-func insertDeleteTokens(tokens []token, mutationStrength int) []token {
+func insertDeleteTokens(tokens []Token, mutationStrength int) []Token {
 	for i := 0; i < mutationStrength; i++ {
 		if GenerateRandomBool(0.6) {
 			// 60% 확률로 새 토큰 삽입
@@ -381,19 +380,19 @@ func insertDeleteTokens(tokens []token, mutationStrength int) []token {
 
 // insertRandomToken는 토큰 하나를 새로 생성하여
 // tokens 슬라이스 내 임의 위치에 삽입합니다.
-func insertRandomToken(tokens []token) []token {
+func insertRandomToken(tokens []Token) []Token {
 	pos := RandRange(0, int64(len(tokens)+1))
 
 	// 새 토큰(예: 간단히 랜덤 ASCII 문자 하나로 구성된 토큰) 생성
 	newTok := randomToken()
 
 	// 슬라이스에 삽입
-	tokens = append(tokens[:pos], append([]token{newTok}, tokens[pos:]...)...)
+	tokens = append(tokens[:pos], append([]Token{newTok}, tokens[pos:]...)...)
 	return tokens
 }
 
 // deleteRandomToken는 tokens 슬라이스에서 임의의 토큰 하나를 삭제합니다.
-func deleteRandomToken(tokens []token) []token {
+func deleteRandomToken(tokens []Token) []Token {
 	if len(tokens) == 0 {
 		return tokens
 	}
@@ -404,23 +403,23 @@ func deleteRandomToken(tokens []token) []token {
 
 // randomToken은 새로 삽입할 토큰 하나를 생성합니다.
 // 필요에 따라 더 다양한 케이스(두 바이트, 세 바이트 한글 등)를 만들 수 있습니다.
-func randomToken() token {
+func randomToken() Token {
 	// 예: 50% 확률로 단일 ASCII 문자, 50% 확률로 두 바이트 UTF-8 문자
 	if GenerateRandomBool(0.5) {
 		// 단일 ASCII
 		b := byte(RandRange(0x20, 0x7E+1))
-		return token{Data: []byte{b}, Valid: true}
+		return Token{Data: []byte{b}, Valid: true}
 	} else {
 		// 간단히 2바이트 UTF-8 문자 범위 (U+00A0~U+07FF) 중 하나 생성
 		r := rune(RandRange(0x00A0, 0x07FF+1))
 		buf := make([]byte, 4)
 		n := utf8.EncodeRune(buf, r)
-		return token{Data: buf[:n], Valid: true}
+		return Token{Data: buf[:n], Valid: true}
 	}
 }
 
 // twoPointCrossover performs two-point crossover on seed.content and returns two new seeds.
-func twoPointCrossover(parent1, parent2 seed, seedCount *uint) (seed, seed) {
+func twoPointCrossover(parent1, parent2 Seed, seedCount *uint) (Seed, Seed) {
 	content1 := make([]interface{}, len(parent1.content))
 	for i, v := range parent1.content {
 		content1[i] = v
@@ -469,7 +468,7 @@ func twoPointCrossover(parent1, parent2 seed, seedCount *uint) (seed, seed) {
 	}
 
 	*seedCount++
-	updatedIdv1 := seed{
+	updatedIdv1 := Seed{
 		gen:           parent1.gen + 1,
 		isCoordinated: false,
 		content:       content1,
@@ -478,7 +477,7 @@ func twoPointCrossover(parent1, parent2 seed, seedCount *uint) (seed, seed) {
 		id:            *seedCount,
 	}
 	*seedCount++
-	updatedIdv2 := seed{
+	updatedIdv2 := Seed{
 		gen:           parent2.gen + 1,
 		isCoordinated: false,
 		content:       content2,
@@ -498,8 +497,8 @@ func twoPointCrossover(parent1, parent2 seed, seedCount *uint) (seed, seed) {
 //   - Uniform crossover (15% 확률): 각 토큰 위치마다 무작위 선택.
 func hybridCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 	// 1) 토큰화
-	tokens1 := tokenizeXXX(p1Bytes)
-	tokens2 := tokenizeXXX(p2Bytes)
+	tokens1 := TokenizeXXX(p1Bytes)
+	tokens2 := TokenizeXXX(p2Bytes)
 
 	// 토큰 배열 중 하나라도 비어 있으면, 임의 바이트로 대체.
 	if len(tokens1) == 0 || len(tokens2) == 0 {
@@ -513,7 +512,7 @@ func hybridCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 	if r < 0.4 {
 		commonTokens := longestCommonSubsequence(tokens1, tokens2)
 		if len(commonTokens) > 0 {
-			newBytes := rebuildBytes(commonTokens)
+			newBytes := RebuildBytes(commonTokens)
 			// 두 자손 모두 공통 토큰 시퀀스를 그대로 상속
 			return newBytes, newBytes
 		}
@@ -533,7 +532,7 @@ func hybridCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 }
 
 // longestCommonSubsequence는 두 토큰 슬라이스 a와 b의 LCS를 계산합니다.
-func longestCommonSubsequence(a, b []token) []token {
+func longestCommonSubsequence(a, b []Token) []Token {
 	n, m := len(a), len(b)
 	// dp[i][j]는 a[:i]와 b[:j]의 LCS 길이
 	dp := make([][]int, n+1)
@@ -552,12 +551,12 @@ func longestCommonSubsequence(a, b []token) []token {
 	}
 
 	// DP 테이블을 거꾸로 추적하여 LCS 재구성
-	var lcs []token
+	var lcs []Token
 	i, j := n, m
 	for i > 0 && j > 0 {
 		if tokensEqual(a[i-1], b[j-1]) {
 			// 앞쪽에 추가 (prepend)
-			lcs = append([]token{a[i-1]}, lcs...)
+			lcs = append([]Token{a[i-1]}, lcs...)
 			i--
 			j--
 		} else if dp[i-1][j] >= dp[i][j-1] {
@@ -571,7 +570,7 @@ func longestCommonSubsequence(a, b []token) []token {
 
 // tokensEqual는 두 토큰이 같은지 비교합니다.
 // 여기서는 token의 Data 필드를 바이트 단위로 비교합니다.
-func tokensEqual(t1, t2 token) bool {
+func tokensEqual(t1, t2 Token) bool {
 	return bytes.Equal(t1.Data, t2.Data)
 }
 
@@ -584,8 +583,8 @@ func max(a, b int) int {
 
 // onePointCrossoverToken performs one-point crossover on two []byte inputs at token level.
 func onePointCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
-	tokens1 := tokenizeXXX(p1Bytes)
-	tokens2 := tokenizeXXX(p2Bytes)
+	tokens1 := TokenizeXXX(p1Bytes)
+	tokens2 := TokenizeXXX(p2Bytes)
 
 	// 두 토큰 배열의 최소 길이 결정
 	minLen := len(tokens1)
@@ -599,20 +598,20 @@ func onePointCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 
 	// 한 점을 무작위로 선택
 	point := int(RandRange(0, int64(minLen)))
-	child1Tokens := append([]token{}, tokens1[:point]...)
+	child1Tokens := append([]Token{}, tokens1[:point]...)
 	child1Tokens = append(child1Tokens, tokens2[point:]...)
 
-	child2Tokens := append([]token{}, tokens2[:point]...)
+	child2Tokens := append([]Token{}, tokens2[:point]...)
 	child2Tokens = append(child2Tokens, tokens1[point:]...)
 
-	return rebuildBytes(child1Tokens), rebuildBytes(child2Tokens)
+	return RebuildBytes(child1Tokens), RebuildBytes(child2Tokens)
 }
 
 // uniformCrossoverToken performs uniform crossover on two []byte inputs at token level.
 // 각 토큰 인덱스마다 무작위로 어느 부모의 토큰을 선택합니다.
 func uniformCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
-	tokens1 := tokenizeXXX(p1Bytes)
-	tokens2 := tokenizeXXX(p2Bytes)
+	tokens1 := TokenizeXXX(p1Bytes)
+	tokens2 := TokenizeXXX(p2Bytes)
 
 	// 두 토큰 배열의 최소 길이 결정
 	minLen := len(tokens1)
@@ -624,8 +623,8 @@ func uniformCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 		return []byte{randomByteFrom(seedByte)}, []byte{randomByteFrom(seedByte)}
 	}
 
-	child1Tokens := make([]token, 0, minLen)
-	child2Tokens := make([]token, 0, minLen)
+	child1Tokens := make([]Token, 0, minLen)
+	child2Tokens := make([]Token, 0, minLen)
 
 	for i := 0; i < minLen; i++ {
 		if randomBool() {
@@ -639,7 +638,7 @@ func uniformCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 
 	// (옵션) 남은 토큰이 있다면, 더 긴 부모의 나머지 부분을 붙여 넣을 수 있음.
 	// 여기서는 단순화를 위해 minLen까지만 사용합니다.
-	return rebuildBytes(child1Tokens), rebuildBytes(child2Tokens)
+	return RebuildBytes(child1Tokens), RebuildBytes(child2Tokens)
 }
 
 // twoPointCrossoverToken는 p1Bytes와 p2Bytes를 토큰 단위로 2점 교차를 수행합니다.
@@ -648,8 +647,8 @@ func uniformCrossoverToken(p1Bytes, p2Bytes []byte) ([]byte, []byte) {
 // 3) rebuildBytes로 다시 []byte로 변환
 func twoPointCrossoverToken(p1Bytes []byte, p2Bytes []byte) ([]byte, []byte) {
 	// 1) 각 바이트 슬라이스를 토큰화
-	tokens1 := tokenizeXXX(p1Bytes)
-	tokens2 := tokenizeXXX(p2Bytes)
+	tokens1 := TokenizeXXX(p1Bytes)
+	tokens2 := TokenizeXXX(p2Bytes)
 
 	l1 := len(tokens1)
 	l2 := len(tokens2)
@@ -695,18 +694,18 @@ func twoPointCrossoverToken(p1Bytes []byte, p2Bytes []byte) ([]byte, []byte) {
 
 	// 3) 두 점 사이의 구간을 서로 교환하여 교차
 	// tokens1 -> crossedTok1
-	crossedTok1 := append([]token{}, tokens1[:point1]...)
+	crossedTok1 := append([]Token{}, tokens1[:point1]...)
 	crossedTok1 = append(crossedTok1, tokens2[point1:point2]...)
 	crossedTok1 = append(crossedTok1, tokens1[point2:]...)
 
 	// tokens2 -> crossedTok2
-	crossedTok2 := append([]token{}, tokens2[:point1]...)
+	crossedTok2 := append([]Token{}, tokens2[:point1]...)
 	crossedTok2 = append(crossedTok2, tokens1[point1:point2]...)
 	crossedTok2 = append(crossedTok2, tokens2[point2:]...)
 
 	// 4) rebuildBytes로 다시 []byte 생성
-	new1 := rebuildBytes(crossedTok1)
-	new2 := rebuildBytes(crossedTok2)
+	new1 := RebuildBytes(crossedTok1)
+	new2 := RebuildBytes(crossedTok2)
 
 	return new1, new2
 }
@@ -1432,7 +1431,7 @@ func randomFloat32(a float32) float32 {
 	exponent := (bits >> 23) & 0xFF
 	mantissa := bits & 0x7FFFFF
 	sign := bits & 0x80000000
-	t := uint32(unixNano())
+	t := uint32(UnixNano())
 	manshift := 1 + (t % 7)
 
 	var shift int8

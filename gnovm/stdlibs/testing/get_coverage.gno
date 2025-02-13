@@ -20,9 +20,9 @@ func Reverse(s string) string {
 // getCoverageOfReverse records coverage information for the Reverse function.
 func getCoverageOfReverse(c *Coverage, s string) string {
 	r := []rune(s)
-	*c = append(*c, coveredLine{coName: "Reverse", coLine: 37})
+	*c = append(*c, CoveredLine{coName: "Reverse", coLine: 37})
 	for i, j := 0, len(r)-1; i < len(r)/2; i, j = i+1, j-1 {
-		*c = append(*c, coveredLine{coName: "Reverse", coLine: 39})
+		*c = append(*c, CoveredLine{coName: "Reverse", coLine: 39})
 		r[i], r[j] = r[j], r[i]
 	}
 	return string(r)
@@ -49,17 +49,17 @@ func getCoverageOfrunner(t *T, content []interface{}) Coverage {
 		if !ok {
 			panic("not a string")
 		}
-		coverage = append(coverage, coveredLine{coName: "symbolicPath", coLine: 1})
+		coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 1})
 		if len(s) > 0 && s[0] == 'b' {
-			coverage = append(coverage, coveredLine{coName: "symbolicPath", coLine: 2})
+			coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 2})
 			if len(s) > 1 && s[1] == 'a' {
-				coverage = append(coverage, coveredLine{coName: "symbolicPath", coLine: 3})
+				coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 3})
 
 				if len(s) > 2 && s[2] == 'd' {
-					coverage = append(coverage, coveredLine{coName: "symbolicPath", coLine: 4})
+					coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 4})
 
 					if len(s) > 3 && s[3] == '!' {
-						coverage = append(coverage, coveredLine{coName: "symbolicPath", coLine: 5})
+						coverage = append(coverage, CoveredLine{coName: "symbolicPath", coLine: 5})
 					}
 				}
 			}
@@ -69,7 +69,7 @@ func getCoverageOfrunner(t *T, content []interface{}) Coverage {
 	}
 
 	coverage := Coverage{}
-	coverage = append(coverage, coveredLine{coName: "closure", coLine: 13})
+	coverage = append(coverage, CoveredLine{coName: "closure", coLine: 13})
 	v, ok := content[0].(string)
 	if !ok {
 		panic("did not implement other type")
@@ -84,12 +84,12 @@ func getCoverageOfrunner(t *T, content []interface{}) Coverage {
 
 	if orig != s2 && u > 300 && u < 1000 {
 
-		coverage = append(coverage, coveredLine{coName: "closure", coLine: 21})
+		coverage = append(coverage, CoveredLine{coName: "closure", coLine: 21})
 		return coverage
 	}
 
 	if utf8.ValidString(orig) && !utf8.ValidString(s1) && u > 300 && u < 1000 {
-		coverage = append(coverage, coveredLine{coName: "closure", coLine: 24})
+		coverage = append(coverage, CoveredLine{coName: "closure", coLine: 24})
 		return coverage
 	}
 	return coverage

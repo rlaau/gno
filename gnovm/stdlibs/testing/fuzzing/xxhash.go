@@ -1,4 +1,4 @@
-package testing
+package fuzzing
 
 import (
 	"encoding/binary"

@@ -9,13 +9,13 @@ import (
 	"unicode/utf8"
 )
 
-// fuzzLogger records and manages failure cases during fuzzing.
-type fuzzLogger struct {
-	data []crashCase
+// FuzzLogger records and manages failure cases during fuzzing.
+type FuzzLogger struct {
+	data []CrashCase
 }
 
-// crashCase represents a single failure case encountered during fuzzing.
-type crashCase struct {
+// CrashCase represents a single failure case encountered during fuzzing.
+type CrashCase struct {
 	hashNumber   uint          // The unique hash number associated with the coverage.
 	input        string        // The input string that caused the failure.
 	rawContent   []interface{} // The raw content of the input.
@@ -25,8 +25,8 @@ type crashCase struct {
 	errorMsg     string        // The error message, if an error occurred.
 }
 
-// testResult holds the result of a fuzzing test, indicating if a panic occurred and any associated messages.
-type testResult struct {
+// TestResult holds the result of a fuzzing test, indicating if a panic occurred and any associated messages.
+type TestResult struct {
 	panicOccurred bool   // Indicates whether a panic occurred during the test.
 	panicMessage  string // The message associated with the panic.
 	prror         error  // The error encountered, if any.
@@ -34,12 +34,12 @@ type testResult struct {
 
 // addCase adds a new crash case to the fuzzLogger based on the provided seed and testResult.
 // It assigns a unique hash number to the coverage and records the details of the failure.
-func (fl *fuzzLogger) addCase(seed seed, r testResult) {
-	var crashcase crashCase
+func (fl *FuzzLogger) addCase(seed Seed, r TestResult) {
+	var crashcase CrashCase
 	if r.prror == nil {
-		crashcase = crashCase{
+		crashcase = CrashCase{
 			hashNumber:   uint(seed.hashNumber),
-			input:        contentToString(seed.content),
+			input:        ContentToString(seed.content),
 			rawContent:   seed.content,
 			inputCount:   seed.id,
 			isPanic:      r.panicOccurred,
@@ -47,9 +47,9 @@ func (fl *fuzzLogger) addCase(seed seed, r testResult) {
 			errorMsg:     "",
 		}
 	} else {
-		crashcase = crashCase{
+		crashcase = CrashCase{
 			hashNumber:   uint(seed.hashNumber),
-			input:        contentToString(seed.content),
+			input:        ContentToString(seed.content),
 			rawContent:   seed.content,
 			inputCount:   seed.id,
 			isPanic:      r.panicOccurred,
@@ -61,7 +61,7 @@ func (fl *fuzzLogger) addCase(seed seed, r testResult) {
 }
 
 // reportLastFailingInput reports the most recent failing input to standard error.
-func (fl *fuzzLogger) reportLastFailingInput() {
+func (fl *FuzzLogger) reportLastFailingInput() {
 	log := fl.data
 	lastCrashCase := log[len(log)-1]
 	fmt.Fprintf(os.Stderr, "Found failing input %s at %d trials, coverage %d \n", escapedToString(lastCrashCase.input), lastCrashCase.inputCount, int(lastCrashCase.hashNumber))
@@ -71,8 +71,8 @@ func (fl *fuzzLogger) reportLastFailingInput() {
 // escapedToString converts escaped characters back to their original form when printed.
 // For example, it converts "�" to "\xeb".
 func escapedToString(s string) string {
-	toks := tokenizeXXX(s)
-	escaped := rebuildEscaped(toks)
+	toks := TokenizeXXX(s)
+	escaped := RebuildEscaped(toks)
 	return escaped
 }
 
@@ -80,14 +80,14 @@ func EscapedToString(s string) string {
 	return escapedToString(s)
 }
 
-// token represents a segment of a string, distinguishing between valid Unicode and broken bytes.
-type token struct {
+// Token represents a segment of a string, distinguishing between valid Unicode and broken bytes.
+type Token struct {
 	Data  []byte // The actual bytes of the token.
 	Valid bool   // Indicates if the bytes successfully decoded as UTF-8.
 }
 
-func tokenizeXXX(s interface{}) []token {
-	var tokens []token
+func TokenizeXXX(s interface{}) []Token {
+	var tokens []Token
 	var b []byte
 
 	// 입력 타입 체크
@@ -104,13 +104,13 @@ func tokenizeXXX(s interface{}) []token {
 		r, size := utf8.DecodeRune(b[i:])
 		switch {
 		case r == utf8.RuneError && size == 1:
-			tokens = append(tokens, token{
+			tokens = append(tokens, Token{
 				Data:  []byte{b[i]},
 				Valid: false,
 			})
 			i++
 		default:
-			tokens = append(tokens, token{
+			tokens = append(tokens, Token{
 				Data:  b[i : i+size],
 				Valid: true,
 			})
@@ -120,8 +120,8 @@ func tokenizeXXX(s interface{}) []token {
 	return tokens
 }
 
-// rebuildString reconstructs a string from a slice of tokens.
-func rebuildString(tokens []token) string {
+// RebuildString reconstructs a string from a slice of tokens.
+func RebuildString(tokens []Token) string {
 	var buf bytes.Buffer
 	for _, t := range tokens {
 		buf.Write(t.Data)
@@ -129,8 +129,8 @@ func rebuildString(tokens []token) string {
 	return buf.String()
 }
 
-// rebuildBytes: `tokens` 슬라이스를 다시 `[]byte`로 변환
-func rebuildBytes(tokens []token) []byte {
+// RebuildBytes: `tokens` 슬라이스를 다시 `[]byte`로 변환
+func RebuildBytes(tokens []Token) []byte {
 	var buf bytes.Buffer
 	for _, t := range tokens {
 		buf.Write(t.Data) // token.Data ([]byte)를 그대로 추가
@@ -138,8 +138,8 @@ func rebuildBytes(tokens []token) []byte {
 	return buf.Bytes()
 }
 
-// rebuildEscaped reconstructs a string with escaped bytes from a slice of tokens.
-func rebuildEscaped(tokens []token) string {
+// RebuildEscaped reconstructs a string with escaped bytes from a slice of tokens.
+func RebuildEscaped(tokens []Token) string {
 	var result []byte
 	for _, t := range tokens {
 		if t.Valid {
@@ -147,7 +147,7 @@ func rebuildEscaped(tokens []token) string {
 		} else {
 			for _, b := range t.Data {
 				result = append(result, []byte("\\x")...)
-				hex := byteToHex(b)
+				hex := ByteToHex(b)
 				result = append(result, hex...)
 			}
 		}
@@ -155,8 +155,8 @@ func rebuildEscaped(tokens []token) string {
 	return string(result)
 }
 
-// byteToHex converts a byte to its hexadecimal representation.
-func byteToHex(b byte) []byte {
+// ByteToHex converts a byte to its hexadecimal representation.
+func ByteToHex(b byte) []byte {
 	const hexdigits = "0123456789abcdef"
 	hi := hexdigits[b>>4]
 	lo := hexdigits[b&0x0F]
@@ -164,15 +164,15 @@ func byteToHex(b byte) []byte {
 }
 
 // reportLastCrashCase reports the details of the most recent crash case to standard error.
-func (fl *fuzzLogger) reportLastCrashCase() {
+func (fl *FuzzLogger) reportLastCrashCase() {
 	log := fl.data
 	lastCrashCase := log[len(log)-1]
-	fmt.Fprintf(os.Stderr, "%s\n", crashCaseToString(lastCrashCase))
+	fmt.Fprintf(os.Stderr, "%s\n", CrashCaseToString(lastCrashCase))
 	return
 }
 
-// crashCaseToString formats a crashCase into a readable string representation.
-func crashCaseToString(c crashCase) string {
+// CrashCaseToString formats a crashCase into a readable string representation.
+func CrashCaseToString(c CrashCase) string {
 	var sb strings.Builder
 
 	sb.WriteString("Input: ")
@@ -191,8 +191,8 @@ func crashCaseToString(c crashCase) string {
 	return sb.String()
 }
 
-// contentToString converts a slice of interface{} content to its string representation.
-func contentToString(content []interface{}) string {
+// ContentToString converts a slice of interface{} content to its string representation.
+func ContentToString(content []interface{}) string {
 	var result strings.Builder
 
 	result.WriteString("[")
@@ -246,15 +246,15 @@ func contentToString(content []interface{}) string {
 }
 
 // getLastCrashCase retrieves the most recent crash case from the fuzzLogger.
-func (fl *fuzzLogger) getLastCrashCase() crashCase {
+func (fl *FuzzLogger) getLastCrashCase() CrashCase {
 	log := fl.data
 	lastCrashCase := log[len(log)-1]
 	return lastCrashCase
 }
 
-// newFuzzLogger creates and initializes a new instance of fuzzLogger.
-func newFuzzLogger() *fuzzLogger {
-	return &fuzzLogger{
-		data: make([]crashCase, 0),
+// NewFuzzLogger creates and initializes a new instance of fuzzLogger.
+func NewFuzzLogger() *FuzzLogger {
+	return &FuzzLogger{
+		data: make([]CrashCase, 0),
 	}
 }

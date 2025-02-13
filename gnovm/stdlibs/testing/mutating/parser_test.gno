@@ -1,4 +1,4 @@
-package parser
+package mutating
 
 import (
 	"fmt"
@@ -23,11 +23,10 @@ func FuzzParser(f *testing.F) {
 		if !ok {
 			panic("dont match")
 		}
-		sourceCode := safeUTF8(s)
-		ast := parseToRoot(sourceCode)
+		ast := parseToRoot([]byte(s))
 		sealized := serializeToString(ast)
-		if sourceCode != sealized {
-			t.Errorf("Before: %q, after: %q", sourceCode, sealized)
+		if s != sealized {
+			t.Errorf("Before: %q, after: %q", s, sealized)
 		}
 	})
 }

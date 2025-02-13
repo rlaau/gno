@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package testing
+package fuzzing
 
 import (
 	"fmt"
@@ -19,6 +19,9 @@ type PCG struct {
 	hi uint64
 	lo uint64
 }
+
+// used to calculate execution times; only present in testing stdlibs
+func unixNano() int64
 
 func UnixNano() int64 {
 	return unixNano()
