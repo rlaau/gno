@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+	"testing/mutating"
 	"unicode/utf8"
-	"mutating"
 )
 
 func FuzzParser(f *testing.F) {
@@ -25,7 +25,7 @@ func FuzzParser(f *testing.F) {
 			panic("dont match")
 		}
 		ast := mutating.ParseToRoot([]byte(s))
-		sealized := fuzzing.SerializeToString(ast)
+		sealized := mutating.SerializeToString(ast)
 		if s != sealized {
 			t.Errorf("Before: %q, after: %q", s, sealized)
 		}

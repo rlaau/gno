@@ -25,12 +25,11 @@ type Ent interface {
 	GetScore() int
 	PlusScore(delta int)
 
-	// 변형하기
-	Mutate2String(strength int, pattern string) (string, map[string]int)
-	// // 2) 변형 전략 카운터
-	// setStrategyCount(strategy string, val int)
-	// getStrategyCount(strategy string) int
-	// plusStrategyCount(strategy string, delta int)
+	// 변형 전략 카운터 관련 메서드
+	initStrategyCount() // 모든 전략 키를 1로 초기화
+
+	getStrategyCount(code MutationCode) int
+	plusStrategyCount(code MutationCode, delta int)
 }
 
 // LetterEnt
@@ -42,7 +41,8 @@ type LetterEnt struct {
 	Score int
 
 	// 전략 사용 로그
-	Strategy2count map[string]int
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 func (a *LetterEnt) setDepth(d int) { a.Depth = d }
@@ -60,10 +60,30 @@ func (a *LetterEnt) SetScore(s int)      { a.Score = s }
 func (a *LetterEnt) GetScore() int       { return a.Score }
 func (a *LetterEnt) PlusScore(delta int) { a.Score += delta }
 
-func (a *LetterEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+func (a *LetterEnt) initStrategyCount() {
+	a.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		a.TotalStrategyCount++
+		a.Strategy2count[code] = 1
+	}
+}
+
+func (a *LetterEnt) getStrategyCount(code MutationCode) int {
+	if a.Strategy2count == nil {
+		a.initStrategyCount()
+	}
+	if count, ok := a.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (a *LetterEnt) plusStrategyCount(code MutationCode, delta int) {
+	if a.Strategy2count == nil {
+		a.initStrategyCount()
+	}
+	a.Strategy2count[code] += delta
+	a.TotalStrategyCount += uint64(delta)
 }
 
 // 전략 카운트 관련 메서드
@@ -95,6 +115,9 @@ type NumEnt struct {
 
 	Id    int // 추가
 	Score int
+
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 func (n *NumEnt) setDepth(d int) { n.Depth = d }
@@ -108,10 +131,31 @@ func (n *NumEnt) String() string {
 func (n *NumEnt) SetScore(s int)      { n.Score = s }
 func (n *NumEnt) GetScore() int       { return n.Score }
 func (n *NumEnt) PlusScore(delta int) { n.Score += delta }
-func (n *NumEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+
+func (n *NumEnt) initStrategyCount() {
+	n.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		n.TotalStrategyCount++
+		n.Strategy2count[code] = 1
+	}
+}
+
+func (n *NumEnt) getStrategyCount(code MutationCode) int {
+	if n.Strategy2count == nil {
+		n.initStrategyCount()
+	}
+	if count, ok := n.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (n *NumEnt) plusStrategyCount(code MutationCode, delta int) {
+	if n.Strategy2count == nil {
+		n.initStrategyCount()
+	}
+	n.Strategy2count[code] += delta
+	n.TotalStrategyCount += uint64(delta)
 }
 
 // WsEnt
@@ -119,8 +163,10 @@ type WsEnt struct {
 	Data  string
 	Depth int
 
-	Id    int
-	Score int
+	Id                 int
+	Score              int
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 func (w *WsEnt) setDepth(d int) { w.Depth = d }
@@ -137,10 +183,31 @@ func (w *WsEnt) String() string {
 func (w *WsEnt) SetScore(s int)      { w.Score = s }
 func (w *WsEnt) GetScore() int       { return w.Score }
 func (w *WsEnt) PlusScore(delta int) { w.Score += delta }
-func (w *WsEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+
+func (w *WsEnt) initStrategyCount() {
+	w.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		w.TotalStrategyCount++
+		w.Strategy2count[code] = 1
+	}
+}
+
+func (w *WsEnt) getStrategyCount(code MutationCode) int {
+	if w.Strategy2count == nil {
+		w.initStrategyCount()
+	}
+	if count, ok := w.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (w *WsEnt) plusStrategyCount(code MutationCode, delta int) {
+	if w.Strategy2count == nil {
+		w.initStrategyCount()
+	}
+	w.Strategy2count[code] += delta
+	w.TotalStrategyCount += uint64(delta)
 }
 
 // MarkEnt
@@ -148,8 +215,10 @@ type MarkEnt struct {
 	Data  string
 	Depth int
 
-	Id    int
-	Score int
+	Id                 int
+	Score              int
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 func (m *MarkEnt) setDepth(d int) { m.Depth = d }
@@ -165,10 +234,31 @@ func (m *MarkEnt) String() string {
 func (m *MarkEnt) SetScore(s int)      { m.Score = s }
 func (m *MarkEnt) GetScore() int       { return m.Score }
 func (m *MarkEnt) PlusScore(delta int) { m.Score += delta }
-func (m *MarkEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+
+func (m *MarkEnt) initStrategyCount() {
+	m.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		m.TotalStrategyCount++
+		m.Strategy2count[code] = 1
+	}
+}
+
+func (m *MarkEnt) getStrategyCount(code MutationCode) int {
+	if m.Strategy2count == nil {
+		m.initStrategyCount()
+	}
+	if count, ok := m.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (m *MarkEnt) plusStrategyCount(code MutationCode, delta int) {
+	if m.Strategy2count == nil {
+		m.initStrategyCount()
+	}
+	m.Strategy2count[code] += delta
+	m.TotalStrategyCount += uint64(delta)
 }
 
 // KeyValEnt
@@ -180,8 +270,10 @@ type KeyValEnt struct {
 	Delimiter Ent
 	V         Ent
 
-	Id    int
-	Score int
+	Id                 int
+	Score              int
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 func (kv *KeyValEnt) setDepth(d int) { kv.Depth = d }
@@ -196,10 +288,31 @@ func (kv *KeyValEnt) String() string {
 func (kv *KeyValEnt) SetScore(s int)      { kv.Score = s }
 func (kv *KeyValEnt) GetScore() int       { return kv.Score }
 func (kv *KeyValEnt) PlusScore(delta int) { kv.Score += delta }
-func (kv *KeyValEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+
+func (kv *KeyValEnt) initStrategyCount() {
+	kv.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		kv.TotalStrategyCount++
+		kv.Strategy2count[code] = 1
+	}
+}
+
+func (kv *KeyValEnt) getStrategyCount(code MutationCode) int {
+	if kv.Strategy2count == nil {
+		kv.initStrategyCount()
+	}
+	if count, ok := kv.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (kv *KeyValEnt) plusStrategyCount(code MutationCode, delta int) {
+	if kv.Strategy2count == nil {
+		kv.initStrategyCount()
+	}
+	kv.Strategy2count[code] += delta
+	kv.TotalStrategyCount += uint64(delta)
 }
 
 // GroupEnt
@@ -208,8 +321,10 @@ type GroupEnt struct {
 	Depth     int
 	IsPattern bool
 
-	Id    int
-	Score int
+	Id                 int
+	Score              int
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 // 🔥 String() 구현
@@ -226,10 +341,31 @@ func (g *GroupEnt) getID() int          { return g.Id }
 func (g *GroupEnt) SetScore(s int)      { g.Score = s }
 func (g *GroupEnt) GetScore() int       { return g.Score }
 func (g *GroupEnt) PlusScore(delta int) { g.Score += delta }
-func (g *GroupEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+
+func (g *GroupEnt) initStrategyCount() {
+	g.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		g.TotalStrategyCount++
+		g.Strategy2count[code] = 1
+	}
+}
+
+func (g *GroupEnt) getStrategyCount(code MutationCode) int {
+	if g.Strategy2count == nil {
+		g.initStrategyCount()
+	}
+	if count, ok := g.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (g *GroupEnt) plusStrategyCount(code MutationCode, delta int) {
+	if g.Strategy2count == nil {
+		g.initStrategyCount()
+	}
+	g.Strategy2count[code] += delta
+	g.TotalStrategyCount += uint64(delta)
 }
 
 // RootEnt
@@ -242,8 +378,10 @@ type RootEnt struct {
 	Id int // 루트 자체의 id
 
 	// 2) Id2Ent 맵: ID→Ent 빠른 접근
-	Id2Ent map[int]Ent
-	Score  int
+	Id2Ent             map[int]Ent
+	Score              int
+	TotalStrategyCount uint64
+	Strategy2count     map[MutationCode]int
 }
 
 func (r *RootEnt) setDepth(d int) { r.Depth = d }
@@ -261,23 +399,32 @@ func (r *RootEnt) String() string {
 func (r *RootEnt) SetScore(s int)      { r.Score = s }
 func (r *RootEnt) GetScore() int       { return r.Score }
 func (r *RootEnt) PlusScore(delta int) { r.Score += delta }
-func (r *RootEnt) Mutate2String(strength int, pattern string) (string, map[string]int) {
-	return "", nil
-	// DO_Somthing
-	// TODO: Chage 메서드 추후 수정핟기
+
+func (r *RootEnt) initStrategyCount() {
+	r.Strategy2count = make(map[MutationCode]int, len(entMutators))
+	for code := range entMutators {
+		r.TotalStrategyCount++
+		r.Strategy2count[code] = 1
+	}
 }
 
-// //이것들 추가하기
-// // 인터페이스는 문법 오류니까. 여튼 추가.
-// type RootEnt interface {
-// 	//여기서부터 추가된 메서드
-// 	// 한 단계 밑으 *Ent의 가중치 계싼
-// 	fmtWeight() //처음엔 1로 초기회
-// 	setWeight(*Ent, int) //Ent에 따른 가중치
-// 	getWeight() map[*Ent][int]
-// 	//모든 ent를 flatten후 포인터 저장
-// 	getFlattened()[]*Ent
-// 	// 변이 수 할당받아서 그 비율만큼 1개씩 변형된 ENT리턴
+func (r *RootEnt) getStrategyCount(code MutationCode) int {
+	if r.Strategy2count == nil {
+		r.initStrategyCount()
+	}
+	if count, ok := r.Strategy2count[code]; ok {
+		return count
+	}
+	return 1
+}
+
+func (r *RootEnt) plusStrategyCount(code MutationCode, delta int) {
+	if r.Strategy2count == nil {
+		r.initStrategyCount()
+	}
+	r.Strategy2count[code] += delta
+	r.TotalStrategyCount += uint64(delta)
+}
 
 // }
 
@@ -779,9 +926,19 @@ func ParseToRoot(b []byte) *RootEnt {
 	r := &RootEnt{Data: toks3, Depth: 0}
 	r = applyPatternToRoot(r)
 	finalizeDepth(r, 0)
-	// 7) finalizeId(새로 추가)
 	finalizeId(r)
-	finalizeScore(r)
+	initializeScore(r)
+	initializeStrategyCount(r)
+
+	return r
+}
+
+func applyPatternToRoot(r *RootEnt) *RootEnt {
+	p, ok := detectPattern(r.Data)
+	if ok {
+		r.IsPattern = true
+		r.Pattern = p
+	}
 	return r
 }
 
@@ -861,15 +1018,6 @@ func detectPattern(tokens []Ent) (string, bool) {
 		return "SOME_ML", true
 	}
 	return "SOMETHING", true
-}
-
-func applyPatternToRoot(r *RootEnt) *RootEnt {
-	p, ok := detectPattern(r.Data)
-	if ok {
-		r.IsPattern = true
-		r.Pattern = p
-	}
-	return r
 }
 
 // flattenTokens: groupEnt 안의 내용을 재귀적으로 펼침
@@ -973,7 +1121,7 @@ func assignId(e Ent, currentID *int, root *RootEnt) {
 	}
 }
 
-func finalizeScore(e Ent) {
+func initializeScore(e Ent) {
 	// e의 score를 1로 설정
 	e.SetScore(1)
 
@@ -982,34 +1130,70 @@ func finalizeScore(e Ent) {
 
 	case *KeyValEnt:
 		if kv.K != nil {
-			finalizeScore(kv.K)
+			initializeScore(kv.K)
 		}
 		if kv.PlOrNil != nil {
-			finalizeScore(kv.PlOrNil)
+			initializeScore(kv.PlOrNil)
 		}
 		if kv.Delimiter != nil {
-			finalizeScore(kv.Delimiter)
+			initializeScore(kv.Delimiter)
 		}
 		if kv.PrOrNil != nil {
-			finalizeScore(kv.PrOrNil)
+			initializeScore(kv.PrOrNil)
 		}
 		if kv.V != nil {
-			finalizeScore(kv.V)
+			initializeScore(kv.V)
 		}
 
 	case *GroupEnt:
 		for _, c := range kv.Data {
-			finalizeScore(c)
+			initializeScore(c)
 		}
 
 	case *RootEnt:
 		for _, c := range kv.Data {
-			finalizeScore(c)
+			initializeScore(c)
 		}
 
 	// LetterEnt, NumEnt, WsEnt, MarkEnt 등은 자식 없음
 	default:
 		// no children
+	}
+}
+
+// initializeStrategyCount는 트리의 모든 Ent 노드를 순회하며
+// 각 노드에 대해 initStrategyCount()를 호출합니다.
+func initializeStrategyCount(e Ent) {
+	// 각 노드에 대해 initStrategyCount()를 호출합니다.
+	e.initStrategyCount()
+
+	// 자식 노드가 있다면 재귀적으로 호출합니다.
+	switch node := e.(type) {
+	case *KeyValEnt:
+		if node.K != nil {
+			initializeStrategyCount(node.K)
+		}
+		if node.PlOrNil != nil {
+			initializeStrategyCount(node.PlOrNil)
+		}
+		if node.Delimiter != nil {
+			initializeStrategyCount(node.Delimiter)
+		}
+		if node.PrOrNil != nil {
+			initializeStrategyCount(node.PrOrNil)
+		}
+		if node.V != nil {
+			initializeStrategyCount(node.V)
+		}
+	case *GroupEnt:
+		for _, child := range node.Data {
+			initializeStrategyCount(child)
+		}
+	case *RootEnt:
+		for _, child := range node.Data {
+			initializeStrategyCount(child)
+		}
+	default:
 	}
 }
 
